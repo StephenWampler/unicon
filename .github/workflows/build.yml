@@ -26,7 +26,7 @@ jobs:
     strategy:
       matrix:
         cfg:
-        -  { os: windows-latest,  name: 'Windows 64-bit', pkg: 'Windows_64-bit',  opt: '--enable-werror' }
+        -  { os: windows-latest,  name: 'Windows 64-bit', pkg: 'Windows_64-bit',  opt: '--disable-iconc --enable-werror' }
         #-  { os: windows-latest,  name: 'Windows 32-bit', opt: '--build=i686-w64-mingw32 --host=i686-w64-mingw32' }
 
     defaults:
@@ -79,7 +79,8 @@ jobs:
     strategy:
       matrix:
         cfg:
-        -  { os: macos-13, name: 'macOS', opt: '--enable-werror CC=clang CXX=clang++' }
+        -  { os: macos-13, name: 'macOS x86', opt: '--enable-werror CC=clang CXX=clang++' }
+        -  { os: macos-latest, name: 'macOS arm', opt: 'CC=clang CXX=clang++' }
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -125,7 +126,7 @@ jobs:
         case "${{ matrix.cfg.os }}" in
            ubuntu*|debian*)
               apt-get update -q -y
-              DEBIAN_FRONTEND="noninteractive" apt-get install -q -y build-essential make autotools-dev libc6 libgcc1 libgl1-mesa-glx
+              DEBIAN_FRONTEND="noninteractive" apt-get install -q -y build-essential make autotools-dev libc6 libgcc1 libgl1-mesa-dev
               DEBIAN_FRONTEND="noninteractive" apt-get install -q -y libssl-dev libx11-dev libjpeg-dev libpng-dev libglu1-mesa-dev libxft-dev
               DEBIAN_FRONTEND="noninteractive" apt-get install -q -y libopenal-dev libalut-dev libogg-dev libvorbis-dev unixodbc-dev libfreetype6-dev
               ;;
@@ -173,15 +174,21 @@ jobs:
     strategy:
       matrix:
         platform:
-         -  { arch: aarch64 }
-         -  { arch: armv7 }
+         -  { arch: aarch64 } # emulated
+         -  { arch: armv7 }   # emulated
+         -  { arch: riscv64 } # emulated
          -  { arch: x86 }
     steps:
+    - name: Install extra dependencies
+      shell: 'sh'
+      run: |
+        sudo apt update && sudo apt install -y binfmt-support
+
     - name: alpine
       uses: jirutka/setup-alpine@v1
       with:
         arch:  ${{ matrix.platform.arch }}
-        branch: v3.19
+        branch: v3.20
         packages: >
           build-base
           diffutils
@@ -225,6 +232,7 @@ jobs:
         -  { os: ubuntu-latest, name: 'Heap Test',      opt: '--enable-debugheap  --enable-verifyheap --enable-werror' }
         -  { os: ubuntu-latest, name: 'Thin Build',     opt: '--enable-thin --enable-werror' }
         -  { os: ubuntu-latest, name: 'Dev Mode',       opt: '--enable-devmode' }
+        -  { os: ubuntu-24.04-arm, name: 'Ubuntu ARM',  opt: '--enable-werror' }
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -232,6 +240,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update -q -y
+        sudo apt install -y binfmt-support
         if [[ "${{ matrix.cfg.name }}" = "Ubuntu 32-bit" ]]
         then
         # Install tools to cross compile 32-bit
@@ -269,6 +278,51 @@ jobs:
       run: |
         cat unicon-config.log
         cat unicon-features.log
+
+  FreeBSD:
+   runs-on: ubuntu-latest
+   name: FreeBSD
+
+   steps:
+   - uses: actions/checkout@v4
+   - name: Start FreeBSD VM
+     id: vm
+     uses: vmactions/freebsd-vm@v1
+     with:
+      usesh: true # default shell is csh, switch to sh
+      prepare: |
+        pkg install -y -f autoconf gmake lang/gcc git
+
+   - name: Configure
+     shell: freebsd {0}
+     run: |
+      cd $GITHUB_WORKSPACE
+      git config --global --add safe.directory $GITHUB_WORKSPACE
+      ./configure
+
+   - name: Make
+     shell: freebsd {0}
+     run: cd $GITHUB_WORKSPACE && gmake
+
+   - name: HtmlDoc
+     shell: freebsd {0}
+     run: cd $GITHUB_WORKSPACE && gmake htmldoc
+
+   - name: Test
+     shell: freebsd {0}
+     run: cd $GITHUB_WORKSPACE && gmake Test
+
+   - name: TestReport
+     shell: freebsd {0}
+     run: cd $GITHUB_WORKSPACE && gmake -C tests Report
+
+   - name: Summary
+     shell: freebsd {0}
+     run: |
+      cd $GITHUB_WORKSPACE
+      cat unicon-config.log
+      cat unicon-features.log
+
 
   DebianPkg:
     runs-on: ${{ matrix.cfg.os }}
