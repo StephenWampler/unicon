@@ -220,7 +220,6 @@ struct descrip zerodesc = {D_Integer};  /* integer 0 */
  * Descriptors used by event monitoring.
  */
 struct descrip csetdesc = {D_Cset};
-struct descrip eventdesc;
 #ifdef DescriptorDouble
 struct descrip rzerodesc = {D_Real, 0.0};
 #else                                   /* DescriptorDouble */
@@ -344,6 +343,7 @@ struct errtab errtab[] = {
    183, "concurrent threads are not enabled in this virtual machine",
    184, "structure cannot have more than one mutex at the same time",
    185, "converting an active co-expression to a thread is not yet supported",
+   186, "mutex is not locked by the current thread",
 #endif                                  /* Concurrent */
 
 #ifdef Dbm
@@ -449,9 +449,38 @@ struct errtab errtab[] = {
    1307, "private key and certificate mismatch",
    1308, "unknown protocol",
 
+   1311, "unknown cryptographic algorithm or cipher",
+   1312, "cryptographic handle lacks required material",
+   1313, "duplicate cryptographic material role",
+   1314, "AEAD authentication failed",
+   1315, "signature verification failed",
+   1316, "invalid cryptographic operation state",
+   1317, "cryptographic material could not be loaded",
+
+   1320, "TLS certificate expired",
+   1321, "TLS untrusted CA",
+   1322, "TLS hostname mismatch",
+   1323, "TLS no shared cipher",
+   1324, "TLS protocol version mismatch",
+   1325, "TLS handshake failed",
+   1326, "bad TLS status field",
+
 #endif                                  /* HAVE_LIBSSL */
 
 #endif                                  /* Messaging */
+
+#ifdef PosixFns
+   1310, "bad socket attribute",
+#endif                                  /* PosixFns */
+
+#ifdef HAVE_LIBSSH
+   1330, "SSH error",
+   1331, "bad ssh attribute",
+   1332, "SSH authentication error",
+   1333, "SSH host key verification error",
+   1334, "SSH channel error",
+   1335, "SFTP error",
+#endif                                  /* HAVE_LIBSSH */
 
 /*
  * End of operating-system specific code.

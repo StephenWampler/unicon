@@ -8,6 +8,8 @@
 # --------------------------------------------------------------------------------
 
 procedure main(args)
+   if not (&features == "concurrent threads") then
+      stop("This program requires concurrent threads.")
    if not (&features == "operator overloading") then
        stop("This program requires operator overloading.")
 
@@ -17,5 +19,5 @@ procedure main(args)
    runTests(args)
 end
 
-$include "FxPtTests.icn"
+$include "data/FxPtTests.icn"
 

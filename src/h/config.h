@@ -5,8 +5,8 @@
 /*
  * System-specific definitions are in define.h
  * update June 2017::
- *    System-specific definitions are being handleded
- *    by the confure script. Some remaining definitions are
+ *    System-specific definitions are being handled
+ *    by the configure script. Some remaining definitions are
  *    moved here so they are all in one place for all systems.
  *    Many of these options will be automated as well.
  */
@@ -49,7 +49,7 @@
  * autoconf-generated symbols.
  */
 #ifndef NoAuto
-#include "../h/auto.h"
+#include "auto.h"
 #endif                                  /* NoAuto */
 
 /*
@@ -126,6 +126,24 @@
 #define HAVE_GETUID 1
 #define PROFIL_CHAR_P
 #endif                                  /* FreeBSD */
+
+#if OpenBSD
+#define GenericBSD
+#define BSD_4_4_LITE    1	/* This is new, for 4.4Lite specific stuff */
+
+#define NEED_UTIME
+#define Messaging 1
+
+#define SysOpt
+
+#define MaxStatSize 40960
+
+#define LinkLibs " -lm"
+
+#define HAVE_GETHOSTNAME 1
+#define HAVE_GETPWUID 1
+#define HAVE_GETUID 1
+#endif					/* OpenBSD */
 
 
 #if Windows
@@ -232,7 +250,7 @@
 #endif                                  /* VMS */
 
 /*
- * The following definitions serve to cast common conditionals is
+ * The following definitions serve to cast common conditionals in
  *  a positive way, while allowing defaults for the cases that
  *  occur most frequently.  That is, if co-expressions are not supported,
  *  NoCoExpr is defined in define.h, but if they are supported, no
@@ -744,7 +762,7 @@ Deliberate Syntax Error
 #endif                                  /* PPInit */
 
 #ifndef PPDirectives
-   #define PPDirectives {"passthru", PpKeep},
+   #define PPDirectives {"passthru", PpKeep}, {"host", PpKeep}, {"rawc", PpKeep},
 #endif                                  /* PPDirectives */
 
 #ifndef NoPseudoPty

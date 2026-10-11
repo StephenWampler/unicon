@@ -1,4 +1,4 @@
-#  Makefile for testing Icon multiple programs 
+#  Makefile for testing Icon multiple programs
 
 include ../Makedefs
 
@@ -11,7 +11,7 @@ TARGETS=$(MTTST)
 else
 skip:
 	@echo "\nMultiple programs are not available in this build"
-	@echo "Skipping multiple programs test...\n"
+	@echo "SKIP: multiple programs test\n"
 
 TARGETS=skip
 endif
@@ -19,17 +19,17 @@ endif
 
 # Do the tests
 Test: DoTest
-	rm -f a a.*
+	@rm -f a a.*
 
-level : level_tp 
+level : level_tp
 
-level_tp : level_tp.icn 
+level_tp : level_tp.icn
 	@rm -f level_tp
-	$(UC) $(UFLAGS) level_tp
+	@$(UC) $(UFLAGS) level_tp
 
-Clean :  Pure 
+Clean :  Pure
 
-clean :  pure 
+clean :  pure
 
 include ../Makefile.test
 

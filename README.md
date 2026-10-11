@@ -1,40 +1,68 @@
-Unicon
-======
+# Unicon
 
-Unicon is a very high level programming language. It runs on many operating systems
-including most Linux distributions, Windows, macOS, and BSD systems. It also supports
-most modern CPU architectures such as i386, amd64, armhf, arm64, and ppc64el.
+Unicon is a very high level programming language descended from [Icon](https://www.cs.arizona.edu/icon/): expression-based, **goal-directed** evaluation, rich string and structure handling, and integrated graphics and systems programming features. It is a **general-purpose** language with object-oriented extensions, concurrency, and database and network libraries, used for teaching, research, and applications. It runs on many operating systems (Linux, Windows, macOS, BSD) and on common CPU architectures (e.g. i386, amd64, arm64).
+
+**License:** the project is distributed under the **GNU General Public License**; see the [COPYING](COPYING) file in this repository (Debian packaging references **GPL-2+** in `debian/copyright`).
+
+## Contents
+
+- [Documentation](#documentation)
+- [Installation](#installation)
+- [Build Instructions](#build-instructions)
+- [Contributing](#contributing)
+- [Help](#help)
+
+## Documentation
+
+Shipped manuals, technical reports, and other files are indexed under **[`doc/`](doc/)** (the documentation index — use its table of contents for the full list). On [unicon.sourceforge.io](https://unicon.sourceforge.io/), **[Books](https://unicon.sourceforge.io/ubooks.html)** lists editions and free PDFs (including *Programming with Unicon* and related titles), and **[Unicon Programming](https://unicon.sourceforge.io/up/index.html)** is an example-oriented online guide. **[Rosetta Code](https://rosettacode.org/wiki/Category:Unicon)** has Unicon solutions for many programming tasks. More technical reports and resources are linked from the project site.
+
+**GitHub Pages:** [uniconproject.github.io/unicon](https://uniconproject.github.io/unicon/) (this README) · **[download packages](https://uniconproject.github.io/unicon/downloads/)** · **[`doc/`](doc/)** for the documentation index · **[Technical Reports](doc/utr/html/)** (RST UTRs).
+
+### Editors and IDEs
+
+**Syntax highlighting:** [`config/editor/`](config/editor/) ships highlighting and editor integration files for several environments (GNU Emacs, Sublime Text, Notepad++, and others); see [`config/editor/README`](config/editor/README) for installation notes.
+
+**Visual Studio Code:** the **[`.vscode/`](https://github.com/uniconproject/unicon/tree/master/.vscode)** directory in this repository holds workspace settings (tasks, launch, optional recommendations). Unicon support is available in three extensions: [**Unicon Helper**](https://marketplace.visualstudio.com/items?itemName=jafar.unicon-lsp), [**Unicon Debugger**](https://marketplace.visualstudio.com/items?itemName=jafar.unicon-debugger), and [**Unicon Syntax**](https://marketplace.visualstudio.com/items?itemName=jafar.unicon-syntax) — or search the [Marketplace](https://marketplace.visualstudio.com/search?term=unicon&target=VSCode) for “Unicon”.
 
 
-Installation
-------------
-The latest sources are available from Unicon's git repositories on Sourceforge and GitHub.
+## Installation
+
+The latest sources are available from Unicon's git repositories and GitHub.
 To get the sources from either repo do:
 
 ```
 git clone https://github.com/uniconproject/unicon.git
 
 ```
-or
 
-```
-git clone git://git.code.sf.net/p/unicon/unicon
-```
 On Windows systems it is advised to add the `--config core.autocrlf=input` option to the `git` command.
-`git` is available on linux via the standard package managers, for example on a Debian system
+`git` is available on Linux via the standard package managers, for example on a Debian system:
 
 ```
 sudo apt install git
 ```
-On macOS git is available with xcode. On windows you can install and setup git using the instructions:
-[here](http://unicon.org/git.html)
+On macOS git is available with Xcode. On Windows you can install and set up git using the instructions:
+[here](https://unicon.org/git.html)
 
-For source tarballs and binary distributions, see unicon.org
-[download page](http://unicon.org/downloads.html)
+For source tarballs and release binaries, see the unicon.org
+[download page](https://unicon.org/downloads.html).
+
+Development builds of the latest `master` commit are on the
+**[download packages](https://uniconproject.github.io/unicon/downloads/)**
+page. That page has the apt, dnf, zypper, and pacman repositories under
+`pkgs/`, and the Windows installers.
+
+`unicon` installs the full graphics set. `unicon-nographics` is that set
+built without graphics or audio, and without the GUI library or ui/ivib.
+The two cannot be installed together. `unicon-runtime` and
+`unicon-runtime-nographics` are just the virtual machine, and they
+conflict as well. The other packages are the pieces on their own:
+translator, compiler, class library, program library, plugins, the GUI
+library, ui/ivib, and tools such as uscribe, udb, and iyacc. Windows
+ships two complete installers instead of these separate packages.
 
 
-Build Instructions
-------------------
+## Build Instructions
 
 _Prerequisites_
 - Gnu/Unix utilities such as shell, make, grep, etc.
@@ -50,7 +78,7 @@ sh configure --help
 ```
 
 The configuration script allows you to enable or disable features in the Unicon build at compile time.
-Some of the features are turned on by default as long as the dependecies are satisfied. Those features
+Some of the features are turned on by default as long as the dependencies are satisfied. Those features
 can be turned off by doing `--disable-FEATURE`, for example:
 ```
 ./configure --disable-graphics
@@ -58,7 +86,7 @@ can be turned off by doing `--disable-FEATURE`, for example:
 disables all graphics support. On the other hand, some features are disabled by default. Those can
 be turned on by doing `--enable-FEATURE`, for example, to enable operator overloading:
 ```
---configure --enable-ovld
+./configure --enable-ovld
 ```
 One other aspect to consider is that the configure script is opportunistic when it comes to turning on features.
 Features that are enabled by default will be disabled automatically if they are missing dependencies. If you want
@@ -67,31 +95,31 @@ dependencies are missing, just enable that feature explicitly. For example, if y
 ```
 ./configure --enable-ssl
 ```
-If openssl development library is not present on the system, the configre script will stop with an error message:
+If openssl development library is not present on the system, the configure script will stop with an error message:
 ```
 configure: error: "ssl requires libssl-dev or equivalent"
 ```
 
 ### Linux
-Use the package manager in your Linux distribution to get a build utilities and C compiler.
+Use the package manager in your Linux distribution to get the build utilities and C compiler.
 For example, on a Debian system
 ```
 sudo apt install build-essential
 ```
 Optionally, you can install development library dependencies to enable more Unicon features.
-Most of these libraries are listed below for common Linux distibutions.
+Most of these libraries are listed below for common Linux distributions.
 
 Debian/Ubuntu:
 ```
-apt install libgl1-mesa-dev libssl-dev libx11-dev libjpeg-dev libpng-dev libglu1-mesa-dev
+apt install libgl1-mesa-dev libssl-dev libssh-dev libx11-dev libjpeg-dev libpng-dev libglu1-mesa-dev
             libxft-dev libopenal-dev libalut-dev libogg-dev libvorbis-dev unixodbc-dev
 	    libfreetype6-dev
 ```
 Fedora/Centos (Depending on your Centos version, you may need to replace dnf with yum):
 ```
 dnf install libjpeg-turbo-devel libpng-devel libX11-devel mesa-libGL-devel mesa-libGLU-devel
-            freetype-devel openal-devel freealut-devel libogg-devel libvorbis-devel
-	    openssl-devel unixODBC-devel libXft-devel
+            freetype-devel openal-soft-devel freealut-devel libogg-devel libvorbis-devel
+	    openssl-devel libssh-devel unixODBC-devel libXft-devel
 ```
 
 Go into the Unicon directory and run:
@@ -114,12 +142,12 @@ explicitly set the compiler as follows:
 ```
 If you want access to the graphics facilities of Unicon, you also need to download
 and install the XQuartz package from https://www.xquartz.org/.
+For native SSH/SFTP support, install libssh (for example `brew install libssh`).
 
 ### *BSD
-
-installl build dependencies. Make sure to use GNU `gmake` when building.
+Install build dependencies. Make sure to use GNU `gmake` when building.
 ```
-pkg install -y -f autoconf gmake lang/gcc git
+pkg install -y -f autoconf gmake lang/gcc git libssh
 ```
 
 Configure, make, and optionally install unicon:
@@ -134,8 +162,8 @@ There are two possibilities depending on the choice of the C runtime library.  Y
 the legacy Microsoft Visual C++ Runtime (MSVCRT), which runs on all versions of Windows, or the
 newer Universal C Runtime (UCRT64), which is used by Visual Studio but is only available by default
 on Windows 10 and newer. Starting from version 13.3, binary distributions of Unicon for Windows
-will be built with UCRT64. See msys2 [environemts](https://www.msys2.org/docs/environments/)
-for more details about available environemnts and their C Library options.
+will be built with UCRT64. See msys2 [environments](https://www.msys2.org/docs/environments/)
+for more details about available environments and their C Library options.
 
 #### 1. UCRT64:
 
@@ -150,7 +178,7 @@ pacman -S --needed base-devel mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86
 - Install the optional libraries for a full build (Unicon will build without them but some features
 will be absent).
 ```
-pacman -S mingw-w64-ucrt-x86_64-openssl  mingw-w64-ucrt-x86_64-libpng mingw-w64-ucrt-x86_64-libjpeg-turbo 
+pacman -S mingw-w64-ucrt-x86_64-openssl mingw-w64-ucrt-x86_64-libssh mingw-w64-ucrt-x86_64-libpng mingw-w64-ucrt-x86_64-libjpeg-turbo 
 ```
 
 - Clone the Unicon repository:
@@ -175,15 +203,15 @@ run from the standard Windows command line `cmd` terminal.
 
 - Download and run [mingw-get-setup.exe](https://sourceforge.net/projects/mingw/files/Installer/)
 
-   Go through the install process and  use it to install only msys-base. This will give you an MSYS (not MSYS2)
+   Go through the install process and use it to install only msys-base. This will give you an MSYS (not MSYS2)
    environment with all the needed Linux/gnu utils.
 
 - Get MinGW64 compiler suite, [TDM package](https://jmeubank.github.io/tdm-gcc/) is known to work with Unicon.
 Most recent package is [9.2.0](https://jmeubank.github.io/tdm-gcc/articles/2020-03/9.2.0-release)
 
-Note that you maybe missing the tool "make". TDM MinGW comes with a "make" that is named mingw32-make.exe.
-That file can be found under the insallation directory of MinGW64 inside the bin directory.
-create a copy of that file and name it "make.exe" before continuing.
+Note that you may be missing the tool "make". TDM MinGW comes with a "make" that is named mingw32-make.exe.
+That file can be found under the installation directory of MinGW64 inside the bin directory.
+Create a copy of that file and name it "make.exe" before continuing.
 
 - Clone the Unicon repository (same steps as UCRT64 above).
 
@@ -203,11 +231,14 @@ The option `x86_64-w64-mingw32` ensures the build is 64-bit. After the script fi
 ```
 make
 ```
-  
 
-  
-Help
-----
 
-Questions and comments to: jeffery@unicon.org
+## Contributing
 
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for reporting issues, pull requests, and **developer builds** (compiler sanitizers, GDB, `ASAN_OPTIONS`, etc.).
+
+
+## Help
+
+- **GitHub:** [Issues](https://github.com/uniconproject/unicon/issues) for bugs and feature requests.
+- **Email:** [jeffery@unicon.org](mailto:jeffery@unicon.org) for other questions and comments.

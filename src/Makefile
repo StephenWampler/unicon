@@ -4,11 +4,21 @@ TOPDIR=..
 
 default: all
 
-include $(TOPDIR)/Makedefs
+UNICON_TOP_BUILDDIR ?= $(TOPDIR)
+include $(UNICON_TOP_BUILDDIR)/Makedefs
+
+# Sub-makes often get --jobserver-auth without -jN in MAKEFLAGS; export N so runtime/urtt matches top-level -j.
+ifneq ($(filter -j%,$(MAKEFLAGS)),)
+export RTT_CC_JOBS := $(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS)))
+endif
 
 # Common components.
+#
+# Windows builds console (iconx/icont) and GUI (wiconx/wicont) variants that
+# share object files rebuilt with different -DNTConsole flags. Those variants
+# must stay sequential; unrelated work (iyacc, Iconc RTL, etc.) can still -j.
 
-all: Common Icont iyacc Iconx $(WICONTTARGET) $(WICONXTARGET) $(ICONCTARGET)
+all: Common Icont iyacc Iconx $(WICONXTARGET) $(WICONTTARGET) $(ICONCTARGET)
 
 Common: libs
 	$(MAKE) -C common
@@ -17,10 +27,15 @@ Common: libs
 
 libs:  $(XPM) gdbm tp
 
-tp:
+# libtp includes <ndbm.h> via sys.h (-I rt/include). gdbm copies that
+# header; with -j, tp used to compile before the copy finished.
+gdbm-headers:
+	$(MAKE) -C gdbm CP_HEADERS
+
+tp: gdbm-headers
 	$(MAKE) -C libtp
 
-gdbm:
+gdbm: gdbm-headers
 	$(MAKE) -C gdbm
 
 xpm:
@@ -38,17 +53,41 @@ Icont:	Common Iconx
 Iconx:	Common
 	$(MAKE) -C runtime interp_all
 
-#force wiconx and wicont to be built at the end
-wuniconx wiconx Wiconx:	Icont
+# GUI interpreter (Windows). CONSOLEOBJS are rebuilt with different -DNTConsole
+# than console iconx, so these must not run in parallel with Iconx (via Icont).
+#
+# Important: only $(WICONXTARGET) gets the recipe. Listing Wiconx on the same
+# multi-target rule as wiconx made GNU make -j run two links when "all" wanted
+# wiconx and wicont depended on Wiconx.
+ifneq ($(WICONXTARGET),)
+$(WICONXTARGET): Icont
 	$(MAKE) -C runtime $(UNICONWX)
-wunicont wicont Wicont: Wiconx
+
+Wiconx: $(WICONXTARGET)
+ifneq ($(WICONXTARGET),wiconx)
+wiconx: $(WICONXTARGET)
+endif
+ifneq ($(WICONXTARGET),wuniconx)
+wuniconx: $(WICONXTARGET)
+endif
+
+$(WICONTTARGET): $(WICONXTARGET)
 	$(MAKE) -C icont $(UNICONWT)
 
-# force Iconx to always build first to avoid building part of both at the same time
+Wicont: $(WICONTTARGET)
+ifneq ($(WICONTTARGET),wicont)
+wicont: $(WICONTTARGET)
+endif
+ifneq ($(WICONTTARGET),wunicont)
+wunicont: $(WICONTTARGET)
+endif
+endif
+
+# force Iconx to always build first (shared runtime tree with compiler RTL).
 Iconc: Common Iconx
 	$(RM) iconc/*.$(O)
 	$(RM) common/doincl$(EXE)
-	$(MAKE) -j1 -C runtime comp_all_uniconc
+	$(MAKE) -C runtime comp_all_uniconc
 	$(MAKE) -C iconc
 	$(MAKE) -C common doincl
 
@@ -58,11 +97,12 @@ FreshIconc:
 	$(RM) iconc/*.$(O)
 	$(RM) ../bin/rt.h
 	$(RM) common/doincl$(EXE)
-	$(MAKE) -j1 -C runtime comp_all_uniconc
+	$(MAKE) -C runtime comp_all_uniconc
 	$(MAKE) -C iconc
 	$(MAKE) -C common doincl
 
-.PHONY: Common Icont Iconx Iconc Clean Pure tp gdbm xpm iyacc libs
+.PHONY: Common Icont Iconx Iconc Clean Pure tp gdbm gdbm-headers xpm iyacc libs \
+	Wiconx wiconx wuniconx Wicont wicont wunicont
 
 clean Clean:
 	if [ -f iyacc/Makefile ] ; then \
@@ -72,7 +112,7 @@ clean Clean:
 	cd common;	$(RM) *.o doincl$(EXE) patchstr$(EXE)
 	cd preproc;	$(RM) *.o pp$(EXE)
 	cd rtt;		$(RM) *.o rtt$(EXE)
-	cd runtime;	$(RM) *.o *.c rt.db rt.a rttcur.lst rttfull.lst $(UNICONX)$(EXE) $(UNICONWX)$(EXE)
+	cd runtime;	$(RM) *.o *.c rt.db rt.a rttcur.lst rttfull.lst compiler-rtl-stamp $(UNICONX)$(EXE) $(UNICONWX)$(EXE)
 	cd icont;	$(RM) *.o $(UNICONT)$(EXE) $(UNICONWT)$(EXE)
 	cd xpm;		$(RM) *.o *.a
 	cd xpm/lib;	$(RM) *.o *.a

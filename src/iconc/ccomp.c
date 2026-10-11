@@ -260,7 +260,11 @@ Deliberate Syntax Error
 #ifdef MacOS
    buf = growcat(buf, &buflen, 1,
          " -I/usr/X11/include  -I/usr/X11 -I/usr/X11/include/freetype2 -L/usr/X11/lib");
-#endif
+#else                                   /* MacOS */
+#ifdef ICONC_FREETYPE_CPPFLAGS
+   buf = growcat(buf, &buflen, 2, " ", ICONC_FREETYPE_CPPFLAGS);
+#endif                                  /* ICONC_FREETYPE_CPPFLAGS */
+#endif                                  /* MacOS */
 #endif                                  /* Graphics */
 
    buf = growcat(buf, &buflen, 6, " ", ExeFlag, " ", exename, " ", srcname);
@@ -313,6 +317,10 @@ Deliberate Syntax Error
 #if HAVE_LIBSSL
    buf = growcat(buf, &buflen, 1, " -lssl -lcrypto");
 #endif                                  /* HAVE_LIBSSL */
+
+#if HAVE_LIBSSH
+   buf = growcat(buf, &buflen, 1, " -lssh");
+#endif                                  /* HAVE_LIBSSH */
 
 #if NTGCC
    buf = growcat(buf, &buflen, 1, " -lwinmm -lwsock32 -lodbc32 -lws2_32");

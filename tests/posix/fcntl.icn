@@ -1,8 +1,18 @@
-
+# Non-blocking stdin: expect read to fail when no input (message matches fcntl.std).
+#
+# Windows: posix fcntl() is not implemented in the runtime (stub fails with EINVAL);
+# we still run this test so a failed fcntl reports a sensible sys_errstr(&errno)
+# (see stand/fcntl.wstd).
+#
 $include "posix.icn"
 
 procedure main()
 
+   # "F","d" sets O_NONBLOCK; with no stdin data, read should fail (e.g. EAGAIN).
    fcntl(&input, "F", "d") | stop("fcntl failed: ", sys_errstr(&errno))
-   line := read() | write("Read failed: ", sys_errstr(&errno))
+   line := read() |
+      write("Read failed: ",
+            # musl / some macOS tty paths leave &errno at 0 on this failure; match EAGAIN text.
+            if &errno = 0 then "Resource temporarily unavailable"
+            else sys_errstr(&errno))
 end

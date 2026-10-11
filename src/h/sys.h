@@ -21,6 +21,10 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(Concurrent) && defined(HAVE_C11_ATOMICS)
+#include <stdatomic.h>
+#endif                                  /* Concurrent && HAVE_C11_ATOMICS */
+
    /* not sure whether this one should always be in effect. Maybe it should.
     * moved from config.h so that it does not knock out exit's prototype.
     */
@@ -446,9 +450,26 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/opensslv.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/rand.h>
 
 #ifndef VMS
 #define VMS 0
 #endif
 
+
 #endif                                  /* HAVE_LIBSSL */
+
+#ifdef HAVE_LIBSSH
+#include <libssh/libssh.h>
+#include <libssh/callbacks.h>
+#include <libssh/sftp.h>
+#endif                                  /* HAVE_LIBSSH */
+
+/* On some systems we get a definition of offsetof() and on some we don't.
+ * Include stddef.h just in case: guards within stddef.h should prevent double inclusion.
+ */
+#include <stddef.h>

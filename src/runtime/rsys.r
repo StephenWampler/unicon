@@ -17,6 +17,11 @@ int sock_getstrg(register char *buf, int maxi, dptr file)
    int r = 0, i=0;
    char *stmp=NULL;
 
+#if HAVE_LIBSSH
+   if (BlkD(*file, File)->status & Fs_SSH)
+      return ssh_getstrg(buf, maxi, BlkD(*file, File)->fd.sshf);
+#endif                                  /* HAVE_LIBSSH */
+
 #if HAVE_LIBSSL
    if (BlkD(*file, File)->status & Fs_Encrypt) {
      r = SSL_peek(BlkD(*file, File)->fd.ssl, buf, maxi);
@@ -91,15 +96,19 @@ int sock_getstrg(register char *buf, int maxi, dptr file)
 #endif                                  /* NT */
 
 /*
- * getstrg - read a line into buf from file fbp.  At most maxi characters
+ * getstrg - read a line into buf from file *file.  At most maxi characters
  *  are read.  getstrg returns the length of the line, not counting the
  *  newline.  Returns -1 if EOF and -2 if length was limited by maxi.
  *  Discards \r before \n in translated mode.  [[ Needs ferror() check. ]]
  */
-int getstrg(register char *buf, int maxi, struct b_file *fbp)
+int getstrg(register char *buf, int maxi, dptr file)
    {
    register int c, l;
-   FILE *fd = fbp->fd.fp;
+   int untrans, rv;
+#if NT
+   int ntpipe, pipeclosed = 0;
+#endif                                  /* NT */
+   FILE *fd = BlkD(*file,File)->fd.fp;
 
 #if defined(PosixFns) && !defined(Concurrent)
    /*
@@ -111,7 +120,7 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
 #endif                                  /* PosixFns */
 
 #ifdef Messaging
-   if (fbp->status & Fs_Messaging) {
+   if (BlkD(*file,File)->status & Fs_Messaging) {
       struct MFile* mf = (struct MFile *)fd;
 
       if (strcmp(mf->tp->uri.scheme, "pop") == 0) {
@@ -136,7 +145,7 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
       else if ((buf[l-1] == '\0') && (l==maxi)) {
          return -2;
          }
-      if ((!(fbp->status & Fs_Untrans)) && (buf[l-1] == '\r')) {
+      if ((!(BlkD(*file,File)->status & Fs_Untrans)) && (buf[l-1] == '\r')) {
          l--;
          }
       return l;
@@ -147,18 +156,18 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
    wflushall();
 #endif                                  /* XWindows */
 #if NT
-   if (fbp->status & Fs_Pipe) {
+   if (BlkD(*file,File)->status & Fs_Pipe) {
       if (feof(fd) || (fgets(buf, maxi, fd) == NULL)) {
          pclose(fd);
-         fbp->status = Fs_Pipe;
+         BlkD(*file,File)->status = Fs_Pipe;
          return -1;
          }
       l = strlen(buf);
       if (l>0 && buf[l-1] == '\n') l--;
-      if (l>0 && buf[l-1] == '\r' && (fbp->status & Fs_Untrans) == 0) l--;
+      if (l>0 && buf[l-1] == '\r' && (BlkD(*file,File)->status & Fs_Untrans) == 0) l--;
       if (feof(fd)) {
          pclose(fd);
-         fbp->status = 0;
+         BlkD(*file,File)->status = 0;
          }
       return l;
       }
@@ -175,6 +184,20 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
    }
 #endif                                  /* PosixFns */
 
+   untrans = (BlkD(*file,File)->status & Fs_Untrans);
+#if NT
+   ntpipe = (BlkD(*file,File)->status & Fs_Pipe);
+#endif                                  /* NT */
+
+   /*
+    * Only C stdio runs in this loop, so count out once for the whole line
+    * rather than around every character.  The file block is in the block
+    * heap, which a collection may move while this thread is counted out,
+    * so it is not touched again until the thread has counted back in
+    * (done:), and then only through file.
+    */
+   DEC_NARTHREADS;
+
    while (1) {
 
 #ifdef Graphics
@@ -182,32 +205,28 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
 #endif                                  /* Graphics */
 
 #if NT
-      if (fbp->status & Fs_Pipe) {
+      if (ntpipe) {
          if (feof(fd)) {
             pclose(fd);
-            fbp->status = 0;
-            if (l>0) return 1;
-            else return -1;
+            pipeclosed = 1;
+            rv = (l>0) ? 1 : -1;
+            goto done;
             }
          }
 #endif                                  /* NT */
       errno = 0;
-      DEC_NARTHREADS;
-      if ((c = fgetc(fd)) == '\n') {    /* \n terminates line */
-         INC_NARTHREADS_CONTROLLED;
+      if ((c = fgetc(fd)) == '\n')      /* \n terminates line */
          break;
-         }
-      INC_NARTHREADS_CONTROLLED;
 
-      if (c == '\r' && (fbp->status & Fs_Untrans) == 0) {
+      if (c == '\r' && untrans == 0) {
          /* \r terminates line in translated mode */
 #if NT
-   if (fbp->status & Fs_Pipe) {
+   if (ntpipe) {
       if (feof(fd)) {
          pclose(fd);
-         fbp->status = 0;
-         if (l>0) return 1;
-         else return -1;
+         pipeclosed = 1;
+         rv = (l>0) ? 1 : -1;
+         goto done;
          }
       }
 #endif                                  /* NT */
@@ -216,20 +235,20 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
          break;
          }
 #if NT
-   if (fbp->status & Fs_Pipe) {
+   if (ntpipe) {
       if (feof(fd)) {
          pclose(fd);
-         fbp->status = 0;
-         if (l>0) return 1;
-         else return -1;
+         pipeclosed = 1;
+         rv = (l>0) ? 1 : -1;
+         goto done;
          }
       }
 #endif                                  /* NT */
       if (c == EOF) {
 #if NT
-         if (fbp->status & Fs_Pipe) {
+         if (ntpipe) {
             pclose(fd);
-            fbp->status = 0;
+            pipeclosed = 1;
             }
 #endif                                  /* NT */
 
@@ -242,7 +261,8 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
             || errno == EWOULDBLOCK
 #endif
          ) {
-            return -1;
+            rv = -1;
+            goto done;
          }
 #endif                                  /* PosixFns */
 
@@ -251,10 +271,12 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
             /* Clear the saved chars buffer */
             nsaved = 0;
 #endif                                  /* PosixFns && !Concurrent */
-            return l;
+            rv = l;
+            goto done;
             }
          else {
-            return -1;
+            rv = -1;
+            goto done;
             }
          }
       if (++l > maxi) {
@@ -263,7 +285,8 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
          /* Clear the saved chars buffer */
          nsaved = 0;
 #endif                                  /* PosixFns && !Concurrent */
-         return -2;
+         rv = -2;
+         goto done;
          }
 #if defined(PosixFns) && !defined(Concurrent)
       savedbuf[nsaved++] = c;
@@ -275,8 +298,15 @@ int getstrg(register char *buf, int maxi, struct b_file *fbp)
    /* We can clear the saved static buffer */
    nsaved = 0;
 #endif                                  /* PosixFns && !Concurrent */
+   rv = l;
 
-   return l;
+done:
+   INC_NARTHREADS_CONTROLLED;
+#if NT
+   if (pipeclosed)
+      BlkD(*file,File)->status = 0;
+#endif                                  /* NT */
+   return rv;
    }
 
 /*
@@ -665,7 +695,7 @@ int urlopen(char *url, int flag, struct netfd *retval)
 
    if ( strcasecmp(scheme, "file") != 0 ) {
       /* Find out the IP address */
-      res0 = uni_getaddrinfo(host, port, SOCK_STREAM, AF_INET);
+      res0 = uni_getaddrinfo(host, port, SOCK_T_STREAM, AF_INET);
       if (!res0)
         return NULL;
 
@@ -785,7 +815,7 @@ FILE *socketopen(char *url, char *type)
       port = "http";
 
    /* Find out the IP address */
-   res0 = uni_getaddrinfo(host, port, SOCK_STREAM, AF_INET);
+   res0 = uni_getaddrinfo(host, port, SOCK_T_STREAM, AF_INET);
    if (!res0)
      return NULL;
 
@@ -1017,25 +1047,6 @@ int netstatus (char *url, struct netstat *buf)
 #endif                                  /* Network */
 
 #if NT
-#ifdef Dbm
-/*
- * Win32 does not provide a link() function expected by GDBM.
- * Cross fingers and hope that copy-on-link semantics will work.
- */
-int link(char *s1, char *s2)
-{
-   int c;
-   FILE *f1 = fopen(s1,"rb"), *f2;
-   if (f1 == NULL) return -1;
-   f2 = fopen(s2, "wb");
-   if (f2 == NULL) { fclose(f1); return -1; }
-   while ((c = fgetc(f1)) != EOF) fputc(c, f2);
-   fclose(f1);
-   fclose(f2);
-   return 0;
-}
-#endif                                  /* Dbm */
-
 struct b_cons *LstTmpFiles;
 void closetmpfiles()
 {
@@ -1392,7 +1403,7 @@ void ptclose(struct ptstruct *ptStruct)
 struct ptstruct *ptopen(char *command)
 {
    char **av;
-#if defined(MacOS) || defined(FreeBSD)
+#if defined(MacOS) || defined(FreeBSD) || defined(OpenBSD)
    char *tmps;
 #endif                                  /* MacOS || FreeBSD */
 #if NT
@@ -1482,7 +1493,7 @@ struct ptstruct *ptopen(char *command)
    if(ttyname_r(newPtStruct->master_fd,newPtStruct->slave_filename,
                       sizeof(newPtStruct->slave_filename)) != 0) {
 #else                                   /* SUN */
-#if defined(MacOS) || defined(FreeBSD)
+#if defined(MacOS) || defined(FreeBSD) || defined(OpenBSD)
    if (((tmps = ptsname(newPtStruct->master_fd)) == NULL) ||
       (strlen(tmps) > sizeof(newPtStruct->slave_filename)-1) ||
       (!strcpy(newPtStruct->slave_filename, tmps))){
@@ -1894,6 +1905,9 @@ void detectRedirection()
  * (e.g. in mswinsystem()).  Behavior differs in that output does not
  * remove double quotes from quoted arguments, otherwise receiving process
  * (if a win32 process) would lose quotedness.
+ *
+ * NT quote and FINDFIRST wildcard expansion match unicon_win32_* in mlocal.c
+ * (unicon_win32_cmdline_to_argv); this routine adds Graphics-related < > redirection.
  */
 int CmdParamToArgv(char *s, char ***avp, int dequote)
 {
@@ -2130,9 +2144,12 @@ int mswinsystem(char *s)
       return -1;
       }
 
+   /* getenv_r returns 0 on success; route shell redirection through cmd.exe */
    if (strchr(s, '>')) {
-      if (getenv_r("SystemRoot", prefixed, 384)) strcat(prefixed, "\\System32\\");
-      else prefixed[0] = '\0';
+      if (getenv_r("SystemRoot", prefixed, 384) == 0)
+         strcat(prefixed, "\\System32\\");
+      else
+         prefixed[0] = '\0';
       strcat(prefixed, "cmd /C "); strcat(prefixed, s);
       s = prefixed;
       }
@@ -2157,3 +2174,219 @@ int mswinsystem(char *s)
       return rv;
 }
 #endif                                  /* MSWindows */
+
+#if NT && defined(PosixFns)
+/*
+ * Winsock select() only accepts SOCKETs.  CRT-backed files (&input,
+ * pipes, regular files) are waited on separately via WaitFor /
+ * PeekNamedPipe, matching the Win32 PTY select path.
+ */
+int win_crt_selectable(unsigned int status)
+{
+   if (!(status & Fs_Read))
+      return 0;
+   if (status & (Fs_Socket | Fs_Directory
+#ifdef Messaging
+                 | Fs_Messaging
+#endif                                  /* Messaging */
+#ifdef Graphics
+                 | Fs_Window
+#endif                                  /* Graphics */
+#ifdef PseudoPty
+                 | Fs_Pty
+#endif                                  /* PseudoPty */
+#ifdef Dbm
+                 | Fs_Dbm
+#endif                                  /* Dbm */
+#ifdef ISQL
+                 | Fs_ODBC
+#endif                                  /* ISQL */
+#if HAVE_LIBSSH
+                 | Fs_SSH
+#endif                                  /* HAVE_LIBSSH */
+#if HAVE_LIBZ
+                 | Fs_Compress
+#endif                                  /* HAVE_LIBZ */
+#ifdef HAVE_VOICE
+                 | Fs_Voice
+#endif                                  /* HAVE_VOICE */
+                 ))
+      return 0;
+   return 1;
+}
+
+/*
+ * Non-zero if a CRT-backed file has input ready (or EOF).
+ */
+int win_crt_pending(struct b_file *fp)
+{
+   HANDLE h;
+   DWORD n, ftype;
+   FILE *f;
+
+   if (fp == NULL || !(fp->status & Fs_Read))
+      return 0;
+   f = fp->fd.fp;
+   if (f == NULL)
+      return 0;
+   if (feof(f))
+      return 1;
+   h = (HANDLE)_get_osfhandle(_fileno(f));
+   if (h == INVALID_HANDLE_VALUE || h == (HANDLE)-1)
+      return 0;
+   ftype = GetFileType(h);
+   if (ftype == FILE_TYPE_DISK)
+      return 1;                         /* regular file: always readable */
+   if (ftype == FILE_TYPE_PIPE) {
+      if (PeekNamedPipe(h, NULL, 0, NULL, &n, NULL))
+         return n > 0;
+      return 1;                         /* broken/closed pipe => EOF ready */
+      }
+   /* console or other character device */
+   return WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
+}
+
+/*
+ * Return a list of CRT files from lcs that are ready, or NULL.
+ */
+struct b_list *findactivecrt(struct b_list *lcs)
+{
+   word i, j;
+   tended union block *ep;
+   tended struct descrip d;
+
+   if (lcs == NULL || lcs->size == 0)
+      return NULL;
+   d = nulldesc;
+   ep = (union block *)(lcs->listhead);
+   for ( ; BlkType(ep) == T_Lelem; ep = ep->Lelem.listnext) {
+      for (i = 0; i < ep->Lelem.nused; i++) {
+         struct b_file *fp;
+         int status;
+         j = ep->Lelem.first + i;
+         if (j >= ep->Lelem.nslots)
+            j -= ep->Lelem.nslots;
+         if (!is:file(ep->Lelem.lslots[j]))
+            continue;
+         status = BlkD(ep->Lelem.lslots[j], File)->status;
+         if (!win_crt_selectable(status))
+            continue;
+         fp = BlkD(ep->Lelem.lslots[j], File);
+         if (win_crt_pending(fp)) {
+            if (is:null(d)) {
+               BlkLoc(d) = (union block *)alclist(0, MinListSlots);
+               d.dword = D_List;
+               }
+            c_put(&d, &(ep->Lelem.lslots[j]));
+            }
+         }
+      }
+   if (is:null(d))
+      return NULL;
+   return (struct b_list *)BlkLoc(d);
+}
+
+/*
+ * Put console fd into raw (or restored sane) input mode for Attrib(f,"tty=").
+ * Returns 0 on success, -1 if fd is not a console or the call fails.
+ */
+int win_console_set_raw(int fd, int raw)
+{
+   static DWORD saved_in = 0, saved_out = 0;
+   static int have_saved = 0;
+   static int saved_fd = -1;
+   HANDLE hin, hout;
+   DWORD mode;
+
+   if (fd < 0)
+      return -1;
+   hin = (HANDLE)_get_osfhandle(fd);
+   if (hin == NULL || hin == INVALID_HANDLE_VALUE || hin == (HANDLE)-1)
+      return -1;
+   hout = GetStdHandle(STD_OUTPUT_HANDLE);
+   if (raw) {
+      if (!GetConsoleMode(hin, &mode))
+         return -1;
+      if (!have_saved || saved_fd != fd) {
+         saved_in = mode;
+         saved_out = 0;
+         if (hout != NULL && hout != INVALID_HANDLE_VALUE &&
+             GetConsoleMode(hout, &mode))
+            saved_out = mode;
+         have_saved = 1;
+         saved_fd = fd;
+         }
+      mode = saved_in;
+      mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+      if (!SetConsoleMode(hin, mode))
+         return -1;
+      if (hout != NULL && hout != INVALID_HANDLE_VALUE &&
+          GetConsoleMode(hout, &mode)) {
+         mode |= ENABLE_PROCESSED_OUTPUT;
+#ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+         mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+#endif
+         SetConsoleMode(hout, mode);
+         }
+      return 0;
+      }
+   if (!have_saved || saved_fd != fd)
+      return 0;
+   if (!SetConsoleMode(hin, saved_in))
+      return -1;
+   if (hout != NULL && hout != INVALID_HANDLE_VALUE && saved_out != 0)
+      SetConsoleMode(hout, saved_out);
+   have_saved = 0;
+   saved_fd = -1;
+   return 0;
+}
+#endif                                  /* NT && PosixFns */
+
+#if UNIX && defined(PosixFns)
+/*
+ * Save/restore termios on fd for Attrib(f, "tty=raw"|"tty=sane").
+ * "sane" restores the mode saved at the last "raw" on that fd, or
+ * applies cooked defaults if nothing was saved.
+ */
+int unix_tty_set_raw(int fd, int raw)
+{
+   static struct termios saved;
+   static int have_saved = 0;
+   static int saved_fd = -1;
+   struct termios tty;
+
+   if (fd < 0 || !isatty(fd))
+      return -1;
+   if (raw) {
+      if (tcgetattr(fd, &tty) < 0)
+         return -1;
+      if (!have_saved || saved_fd != fd) {
+         saved = tty;
+         have_saved = 1;
+         saved_fd = fd;
+         }
+      tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ECHOK | ECHONL | ISIG | IEXTEN);
+      tty.c_iflag &= ~(IXON | IXOFF | ICRNL | INLCR | IGNCR);
+      tty.c_oflag &= ~(OPOST);
+      tty.c_cc[VMIN] = 1;
+      tty.c_cc[VTIME] = 0;
+      return tcsetattr(fd, TCSANOW, &tty) < 0 ? -1 : 0;
+      }
+   if (have_saved && saved_fd == fd) {
+      if (tcsetattr(fd, TCSANOW, &saved) < 0)
+         return -1;
+      have_saved = 0;
+      saved_fd = -1;
+      return 0;
+      }
+   if (tcgetattr(fd, &tty) < 0)
+      return -1;
+   tty.c_lflag |= (ICANON | ECHO | ISIG);
+   tty.c_iflag |= ICRNL;
+   tty.c_oflag |= OPOST;
+#ifdef ONLCR
+   tty.c_oflag |= ONLCR;
+#endif                                  /* ONLCR */
+   return tcsetattr(fd, TCSANOW, &tty) < 0 ? -1 : 0;
+}
+#endif                                  /* UNIX && PosixFns */

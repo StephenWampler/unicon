@@ -2,8 +2,9 @@ TOPDIR=..
 
 default: all
 
-include $(TOPDIR)/Makedefs
-include $(TOPDIR)/Makedefs.uni
+UNICON_TOP_BUILDDIR ?= $(TOPDIR)
+include $(UNICON_TOP_BUILDDIR)/Makedefs
+include $(UNICON_TOP_BUILDDIR)/Makedefs.uni
 
 .PHONY: all unicon lib xml gui
 
@@ -25,6 +26,7 @@ nographics: xml
 	cd unidep; $(MAKE)
 	cd util; $(MAKE)
 	cd unidoc; $(MAKE)
+	cd uscribe; $(MAKE)
 	cd uflex; $(MAKE)
 	cd ulsp; $(MAKE)
 
@@ -41,6 +43,8 @@ graphics: gui
 	cd ide; $(MAKE)
 	cd 3d; $(MAKE)
 
+# clean, Clean, and Pure remove what this tree built, including copies
+# installed under bin/. Configure output is not here.
 clean Clean Pure:
 	cd unicon && $(MAKE) Clean
 	cd udb && $(MAKE) Clean
@@ -55,6 +59,8 @@ clean Clean Pure:
 	cd unidoc && $(MAKE) clean
 	cd unidoc/parlett && $(MAKE) clean
 	cd unidoc/parlett/docs && $(MAKE) clean
+	cd uscribe && $(MAKE) clean
 	cd ide && $(MAKE) clean
 	cd 3d && $(MAKE) clean
 	cd ulsp && $(MAKE) clean
+	cd uflex && $(MAKE) clean

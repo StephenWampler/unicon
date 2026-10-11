@@ -48,6 +48,22 @@ word lastop;                    /* Last operator evaluated */
 #endif                                  /* MultiProgram */
 
 /*
+ * A rewritten opcode is published with a release fence before a plain
+ * store, and read with a plain load (and an acquire fence where the
+ * operand is used; AbsOperandFence).  ThreadSanitizer does not model
+ * fences, so in its builds the fetch is an acquire load and the store a
+ * release store, which is what the fences stand for.  PutInstr publishes
+ * in every build, so these are not under Concurrent.
+ */
+#ifdef ThreadSanitizer
+#define GetOp (word)__atomic_load_n(ipc.op++, __ATOMIC_ACQUIRE)
+#define PublishOp(p, x) __atomic_store_n((p), (x), __ATOMIC_RELEASE)
+#else                                   /* ThreadSanitizer */
+#define GetOp (word)(*ipc.op++)
+#define PublishOp(p, x) do { ATOMIC_FENCE_RELEASE(); *(p) = (x); } while (0)
+#endif                                  /* ThreadSanitizer */
+
+/*
  * Istate variables.
  */
 
@@ -64,7 +80,88 @@ word *stack;                            /* Interpreter stack */
 word *stackend;                         /* End of interpreter stack */
 #endif                                  /* StackCheck */
 #else                                   /* Concurrent */
-int lock_count_mtx_init;
+/*
+ * initial clauses in progress.  A clause is compiled as
+ *
+ *    L0: init L2 ; mark L1 ; body ; unmark ; L1: einit L0 ; L2:
+ *
+ * where init's operand is a relative offset to L2, like goto's.  The
+ * first thread to reach a clause runs its body; the same thread reaching
+ * it again (recursion) skips it, as in Icon; other threads wait until it
+ * is done.  It is done at einit or when the owning procedure frame
+ * returns, fails or suspends out of the body; either way the init is
+ * rewritten into an agoto to L2.  MTX_INITIAL protects the list but is
+ * not held while a body runs, so clauses of different procedures no
+ * longer serialize.
+ */
+struct init_site {
+   word *after;                         /* just past the init's operand */
+   struct threadstate *owner;           /* thread running the body */
+   struct pf_marker *frame;             /* its procedure frame */
+   struct init_site *next;
+   };
+static struct init_site *init_sites;    /* protected by MTX_INITIAL */
+static AtomicInt init_running;          /* how many; read without the lock */
+static pthread_cond_t init_done_cv = PTHREAD_COND_INITIALIZER;
+
+/*
+ * Rewrite the init whose operand ends at after into "agoto L2", the same
+ * rewrite Op_Goto does to itself (PutInstr): operand, fence, opcode.
+ */
+static void init_rewrite(word *after)
+{
+   inst at;
+   word target = (word)after + after[-1];
+
+   at.opnd = after;
+#if WordBits == IntBits
+   at.opnd[-1] = target;
+   PublishOp(&at.op[-2], Op_Agoto);
+#else                                   /* WordBits == IntBits */
+   at.opnd[-1] = target;
+   PublishOp(&at.op[-3], Op_Agoto);
+#endif                                  /* WordBits == IntBits */
+}
+
+/*
+ * Finish the clause owned by (owner, frame), if any: rewrite its init,
+ * drop it from the list and wake the threads waiting for it.  Called
+ * with MTX_INITIAL held.  Returns 1 if there was one.
+ */
+static int init_finish(struct threadstate *owner, struct pf_marker *frame)
+{
+   struct init_site **isp, *site;
+
+   for (isp = &init_sites; (site = *isp) != NULL; isp = &site->next)
+      if (site->owner == owner && site->frame == frame) {
+         init_rewrite(site->after);
+         *isp = site->next;
+         free(site);
+         init_running--;
+         pthread_cond_broadcast(&init_done_cv);
+         return 1;
+         }
+   return 0;
+}
+
+/*
+ * A procedure frame is being left by return, fail or suspend; finish an
+ * initial clause it left without reaching einit.  The unlocked test is
+ * enough for the owner, which made its own increment.
+ *
+ * MTX_INITIAL is always taken CONTROLLED: a thread can hold it while it
+ * waits out a collection, and a thread blocking on it plainly would keep
+ * the collector waiting.  Waiting counts the thread out, so the stack
+ * pointer is synced first for the collector.
+ */
+#define InitFrameExit(owner, frame) do { \
+   if (ATOMIC_LOAD(init_running)) { \
+      ExInterp_sp; \
+      MUTEX_LOCKID_CONTROLLED_ALWAYS(MTX_INITIAL); \
+      init_finish(owner, frame); \
+      MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL); \
+      } \
+   } while (0)
 #endif                                  /* Concurrent */
 
 #if HAVE_PROFIL && E_Tick
@@ -270,7 +367,6 @@ if (((int (*)(dptr))*(optab[lastop]))(rargp) == A_Resume) {
  */
 #define GetWord (*ipc.opnd++)
 #define PutWord(x) ipc.opnd[-1] = (x)
-#define GetOp (word)(*ipc.op++)
 #define PutOp(x) ipc.op[-1] = (x)
 
 /*
@@ -285,19 +381,26 @@ if (((int (*)(dptr))*(optab[lastop]))(rargp) == A_Resume) {
  * condition on the pointer-based bytecode, the macro may not write
  * the new opcode until after the offset has been converted to a pointer.
  */
+/*
+ * Another thread may fetch the new opcode without the mutex, so the
+ * operand must be visible before it: a release fence between the two
+ * stores, paired with an acquire fence where the absolute opcodes read
+ * their operand (AbsOperandFence).  On x86 these only constrain the
+ * compiler; on weakly ordered CPUs (ARM64, POWER) they are required.
+ */
+#ifdef Concurrent
+#define AbsOperandFence() ATOMIC_FENCE_ACQUIRE()
+#else                                   /* Concurrent */
+#define AbsOperandFence()
+#endif                                  /* Concurrent */
+
 #if WordBits == IntBits
 #begdef PutInstr(x,y,op_offset)
-   do { ipc.opnd[-1] = (y); ipc.op[-1-op_offset] = (x); } while(0)
-#enddef
-#begdef PutInstrAt(x,y,p)
-   do { *((word *)(p)) = (word)(y); *((int *)(p-1)) = (x); } while(0)
+   do { ipc.opnd[-1] = (y); PublishOp(&ipc.op[-1-op_offset], (x)); } while(0)
 #enddef
 #else if WordBits == IntBits*2
 #begdef PutInstr(x,y,op_offset)
-   do { ipc.opnd[-1] = (y); ipc.op[-1-2*op_offset] = (x); } while(0)
-#enddef
-#begdef PutInstrAt(x,y,p)
-   do { *((word *)(p+1)) = (word)(y); *((int *)(p)) = (x); } while(0)
+   do { ipc.opnd[-1] = (y); PublishOp(&ipc.op[-1-2*op_offset], (x)); } while(0)
 #enddef
 #else
 deliberate syntax error
@@ -703,7 +806,7 @@ Deliberate Syntax Error
 
 #ifdef Concurrent
       /* If there is a pending GC request, then block/sleep*/
-      if (thread_call){
+      if (ATOMIC_LOAD(thread_call)){
         ExInterp_sp;
         thread_control(TC_ANSWERCALL);
         /*EntInterp_sp;*/
@@ -744,6 +847,7 @@ Deliberate Syntax Error
             break;
 
          case Op_Acset:         /* cset, absolute address */
+            AbsOperandFence();
 L_acset:
             PushVal(D_Cset);
             PushAVal(GetWord);
@@ -789,6 +893,7 @@ L_acset:
             break;
 
          case Op_Areal:         /* real, absolute address */
+            AbsOperandFence();
 L_areal:
             PushVal(D_Real);
 #ifdef DescriptorDouble
@@ -835,6 +940,7 @@ L_areal:
             break;
 
          case Op_Astr:          /* string, absolute address */
+            AbsOperandFence();
 L_astr:
             PushVal(GetWord);
             PushAVal(GetWord);
@@ -884,6 +990,7 @@ L_astr:
             break;
 
          case Op_Aglobal:       /* global, absolute address */
+            AbsOperandFence();
 L_aglobal:
             PushVal(D_Var);
             PushAVal(GetWord);
@@ -930,6 +1037,7 @@ L_aglobal:
             break;
 
          case Op_Astatic:       /* static, absolute address */
+            AbsOperandFence();
 L_astatic:
             PushVal(D_Var);
             PushAVal(GetWord);
@@ -1013,8 +1121,8 @@ L_astatic:
             DerefArg(2);
             Call_Cond(e_ofail);
 
-         case Op_Rcv:           /* e1 @< e2 */
-         case Op_RcvBk:         /* e1 @<< e2 */
+         case Op_Rcv:           /* e1 <@ e2 */
+         case Op_RcvBk:         /* e1 <<@ e2 */
          case Op_Snd:           /* e1 @> e2 */
          case Op_SndBk:         /* e1 @>> e2 */
             Setup_Op(2, e_ocall);
@@ -1377,6 +1485,7 @@ invokej:
             goto mark;
 
          case Op_Amark:         /* mark with absolute fipc */
+            AbsOperandFence();
 L_amark:
             newefp = (struct ef_marker *)(rsp + 1);
             newefp->ef_failure.opnd = (word *)GetWord;
@@ -1582,6 +1691,9 @@ Lsusp_uw:
             struct descrip tmp;
             dptr svalp;
             struct b_proc *sproc;
+#ifdef Concurrent
+            InitFrameExit(curtstate, pfp);      /* left an initial clause? */
+#endif                                  /* Concurrent */
 
 #if e_psusp
             value_tmp = *(dptr)(rsp - 1);       /* argument */
@@ -1714,6 +1826,9 @@ Eret_uw:
              */
             struct b_proc *rproc;
             rproc = BlkD(*glbl_argp, Proc);
+#ifdef Concurrent
+            InitFrameExit(curtstate, pfp);      /* left an initial clause? */
+#endif                                  /* Concurrent */
 #if e_prem || e_erem
             ExInterp_sp;
             vanq_proc(efp, gfp);
@@ -1922,6 +2037,9 @@ efail_noev:
                }
 
          case Op_Pfail: {       /* fail from procedure */
+#ifdef Concurrent
+            InitFrameExit(curtstate, pfp);      /* left an initial clause? */
+#endif                                  /* Concurrent */
 
 #if e_pfail || e_prem || e_erem
             ExInterp_sp;
@@ -2020,6 +2138,7 @@ EntInterp_sp;
             break;
 
          case Op_Agoto:         /* goto absolute address */
+            AbsOperandFence();
 L_agoto:
             opnd = GetWord;
             ipc.opnd = (word *)opnd;
@@ -2027,50 +2146,68 @@ L_agoto:
 
          case Op_Init:          /* initial */
 #ifdef Concurrent
+            {
+            struct init_site *site;
+            word *after = ipc.opnd + 1;
+
+            ExInterp_sp;                        /* may wait counted out */
             MUTEX_LOCKID_CONTROLLED_ALWAYS(MTX_INITIAL);
-            if (ipc.op[-1] == Op_Agoto) {
-               MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
-               goto L_agoto;
+            for (;;) {
+               if (ipc.op[-1] == Op_Agoto) {    /* done */
+                  MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
+                  goto L_agoto;
+                  }
+               for (site = init_sites; site && site->after != after; site = site->next)
+                  ;
+               if (site == NULL)                  /* not started: run it */
+                  break;
+               if (site->owner == curtstate) {    /* recursion: skip it */
+                  MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
+                  ipc.opnd = (word *)((word)after + after[-1]);
+                  goto init_skipped;
+                  }
+               /* another thread is running it; wait until it is done */
+               DEC_NARTHREADS;
+               pthread_cond_wait(&init_done_cv, MUTEXID(MTX_INITIAL));
+               INC_NARTHREADS_CONTROLLED;
                }
+
+            if ((site = malloc(sizeof(struct init_site))) == NULL) {
+               MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
+               syserr("interp: out of memory for initial clause");
+               }
+            site->after = after;
+            site->owner = curtstate;
+            site->frame = pfp;
+            site->next = init_sites;
+            init_sites = site;
+            init_running++;
+            MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
+            ipc.opnd = after;                   /* run the body */
+            }
+init_skipped:
 #else                                   /*Concurrent*/
             *--ipc.op = Op_Goto;
-#endif                                  /*Concurrent*/
-
-#ifdef Concurrent
-            /* no-op on concurrent VM's, but still have to skip operand */
-            lock_count_mtx_init++;
-            if (*ipc.opnd ==-1){
-                while(lock_count_mtx_init--)
-                   MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
-
-                err_msg(182, NULL);
-                }
-            *ipc.opnd = -1;
-            ipc.opnd++;
-#else
             opnd = sizeof(*ipc.op) + sizeof(*rsp);
             opnd += (word)ipc.opnd;
             ipc.opnd = (word *)opnd;
-#endif
+#endif                                  /*Concurrent*/
             break;
 
          case Op_EInit:
             /* no-op on non-concurrent VM's, but still have to skip operand */
             opnd = GetWord;
 #ifdef Concurrent
-
-             /*
-              * Really interesting variant of PutInstr pokes instruction
-              * back at corresponding Op_Init instruction to be a Goto
-              * that jumps to the next instruction...which is our ipc.opnd
-              */
-
-             PutInstrAt(Op_Agoto, ipc.opnd, (ipc.op + ((opnd<<3)/IntBits+1)));
-
-             MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
-             lock_count_mtx_init--;
+            /*
+             * The body is done.  Its clause was already finished if the body
+             * suspended out of this frame earlier and was resumed.
+             */
+            ExInterp_sp;                        /* may wait counted out */
+            MUTEX_LOCKID_CONTROLLED_ALWAYS(MTX_INITIAL);
+            init_finish(curtstate, pfp);
+            MUTEX_UNLOCKID_ALWAYS(MTX_INITIAL);
 #endif                                  /* Concurrent */
-             break;
+            break;
 
          case Op_Limit:         /* limit */
             Setup_Arg(0);

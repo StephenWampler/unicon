@@ -3,7 +3,8 @@ TOPDIR=../..
 
 default: default_target
 
-include $(TOPDIR)/Makedefs
+UNICON_TOP_BUILDDIR ?= $(TOPDIR)
+include $(UNICON_TOP_BUILDDIR)/Makedefs
 
 LIBD=$(TOPDIR)/plugins/lib
 ICALLDIR=$(TOPDIR)/uni/icall
@@ -16,7 +17,7 @@ UFLAGS=-s -u -c
 
 CFDYN2= $(CFDYN)
 
-# plaform independent  plugins
+# platform-independent plugins
 PCMN=upexample SHA bitman $(SQLITE)
 
 # Windows 
@@ -25,12 +26,19 @@ PWIN=
 # *nix OS
 PNIX=lxcunicon
 
-# MacOS
+# macOS
 PMOS=
 
 .PHONY: clean zip $(PCMN) $(PWIN) $(PNIX) $(PMOS) windows linux macos
 
-default_target:   icall.$(O) $(LIBD)/uso.u $(PCMN)
+# One plugin directory at a time, including "make -j SHA bitman".
+# Each interface is compiled in plugins/lib, where unicon rewrites
+# uniclass.*, so overlapping plugin builds can drop a class another
+# compile is still resolving. C files inside one plugin still follow
+# the job count: this makefile is serial, and the per-plugin makes are not.
+.NOTPARALLEL:
+default_target:   icall.$(O) $(LIBD)/uso.u
+	@for p in $(PCMN); do $(MAKE) -C $$p || exit $$?; done
 
 all: uso.u icall.$(O)
 
@@ -38,13 +46,16 @@ icall.$(O): $(ICALLDIR)/icall.h $(ICALLDIR)/icall.c
 	$(CC) $(CFDYN2) -c $(ICALLDIR)/icall.c
 	$(CP) icall.$(O) ../lib/
 
-windows: $(PCMN) $(PWIN)
+windows: $(LIBD)/uso.u
+	@for p in $(PCMN) $(PWIN); do $(MAKE) -C $$p || exit $$?; done
 
-linux: $(PCMN) $(PNIX)
+linux: $(LIBD)/uso.u
+	@for p in $(PCMN) $(PNIX); do $(MAKE) -C $$p || exit $$?; done
 
-macos: $(PCMN) $(PMOS)
+macos: $(LIBD)/uso.u
+	@for p in $(PCMN) $(PMOS); do $(MAKE) -C $$p || exit $$?; done
 
-# Build cross platforms plugins
+# Build cross-platform plugins
 $(PCMN): $(LIBD)/uso.u
 	$(MAKE) -C $@
 
@@ -56,7 +67,7 @@ $(PWIN): $(LIBD)/uso.u
 $(PNIX): $(LIBD)/uso.u
 	$(MAKE) -C $@
 
-# Build Mac OS plugins
+# Build macOS plugins
 $(PMOS): $(LIBD)/uso.u
 	$(MAKE) -C $@
 

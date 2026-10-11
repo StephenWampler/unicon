@@ -1,6 +1,8 @@
 #  Makefile for the Icon Program Library
 
-include ../Makedefs.uni
+TOPDIR = ..
+UNICON_TOP_BUILDDIR ?= $(TOPDIR)
+include $(UNICON_TOP_BUILDDIR)/Makedefs.uni
 
 #  Make a library distribution (portable ucode and include files).
 
@@ -51,7 +53,8 @@ Check:
 	./CheckAll
 
 
-#  Clean up.
+#  clean, Clean, and Pure remove built ucode, including lib/*.u. That
+#  library is not checked in. Nothing here is configure output.
 
 clean Clean Pure:
 	rm -rf iexe */*.u */*.zip

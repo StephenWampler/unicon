@@ -8,6 +8,8 @@
 # --------------------------------------------------------------------------------
 
 procedure main(args)
+   if not (&features == "concurrent threads") then
+      stop("This program requires concurrent threads.")
    if not(&features == "large integers") then
       stop("This program requires large integers.")
 
@@ -16,5 +18,5 @@ end
 
 # Turn off operator overloading
 $undef _OVLD
-$include "FxPtTests.icn"
+$include "data/FxPtTests.icn"
 

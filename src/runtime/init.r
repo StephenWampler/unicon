@@ -59,9 +59,9 @@ TRuntime_Status rt_status;
         underef,\
         0,\
         {{sizeof(sname)-1,sname}}},
-#passthru static B_IProc(2) init_op_tbl[] = {
+#rawc static B_IProc(2) init_op_tbl[] = {
 #passthru #include "../h/odefs.h"
-#passthru   };
+#rawc   };
 #undef OpDef
 #endif                                  /* !COMPILER */
 
@@ -152,8 +152,8 @@ struct region *curstring, *curblock;
      struct threadstate *global_curtstate;
 
 #ifdef HAVE_KEYWORD__THREAD
-      #passthru __thread struct threadstate roottstate;
-      #passthru __thread struct threadstate *curtstate;
+      __thread struct threadstate roottstate;
+      __thread struct threadstate *curtstate;
 #else                                   /* HAVE_KEYWORD__THREAD */
       struct threadstate roottstate;
 #endif                                  /* HAVE_KEYWORD__THREAD */
@@ -200,7 +200,6 @@ struct region *Public_blockregion;
 
 word mutexid_stringtotal;
 word mutexid_blocktotal;
-word mutexid_coll;
 #else                                   /* ConcurrentCOMPILER */
 struct progstate *curpstate;
 struct progstate rootpstate;
@@ -246,11 +245,11 @@ int dumped = 0;                         /* non-zero if reloaded from dump */
 #endif                                  /* ExecImages */
 
 #ifdef MultipleRuns
-extern word coexp_ser;
-extern word list_ser;
-extern word intern_list_ser;
-extern word set_ser;
-extern word table_ser;
+extern AtomicWord coexp_ser;
+extern AtomicWord list_ser;
+extern AtomicWord intern_list_ser;
+extern AtomicWord set_ser;
+extern AtomicWord table_ser;
 extern int first_time;
 #endif                                  /* MultipleRuns */
 
@@ -768,8 +767,8 @@ void init_progstate(struct progstate *pstate);
     * If this is one-time program initialization and no concurrent threads
     * are possible, I am not sure how these mutexes can be needed.
     */
-MUTEX_LOCKID(MTX_PUBLICSTRHEAP);
-MUTEX_LOCKID(MTX_PUBLICBLKHEAP);
+MUTEX_LOCKID_CONTROLLED(MTX_PUBLICSTRHEAP);
+MUTEX_LOCKID_CONTROLLED(MTX_PUBLICBLKHEAP);
    Public_stringregion = NULL;
    Public_blockregion = NULL;
 MUTEX_UNLOCKID(MTX_PUBLICSTRHEAP);
@@ -1009,7 +1008,7 @@ Deliberate Syntax Error
    mainhead->status = Ts_Main | Ts_Attached | Ts_Async;
 
 #ifdef Concurrent
-   thread_call=0;               /* The thread who requested a GC */
+   ATOMIC_STORE(thread_call, 0);  /* The thread who requested a GC */
    NARthreads=1;        /* Number of Async Running threads*/
 
    if (alcce_queues(mainhead) == Failed)
@@ -1664,7 +1663,7 @@ static word unicon_getrandom(void)
  *   &random := map("sSmMhH", "Hh:Mm:Ss", &clock) +
  *    map("YyXxMmDd", "YyXx/Mm/Dd", &date) + &time + 1009 * ncalls
  */
-   static int ncalls = 0;
+   static AtomicInt ncalls = 0;
    word krandom;
    time_t t;
    struct tm *ct;
@@ -1700,8 +1699,7 @@ static word unicon_getrandom(void)
    /* + map &time */
 
 #ifndef HAVE_KEYWORD__THREAD
-   ncalls++;
-   krandom += millisec() + 1009 * ncalls;
+   krandom += millisec() + 1009 * (ATOMIC_ADD(ncalls, 1) + 1);
 #else
    krandom += millisec() + 1009 * (int) curtstate;
 #endif

@@ -1,6 +1,6 @@
 
 
-# arsgs: additionals cflags, ldflags and cppflags.  
+# args: additional cflags, ldflags and cppflags.
 AC_DEFUN([save_flags],
 [
 	TMP_CPPFLAGS=$CPPFLAGS
@@ -54,16 +54,16 @@ AC_DEFUN([restore_flags],
 AC_DEFUN([fail_and_restore],
 [
 	restore_flags()
-	AC_MSG_CHECKING(checking lib $1)
-	AC_MSG_RESULT(failed)
+	AC_MSG_CHECKING([for lib $1])
+	AC_MSG_RESULT([failed])
 ])
 
 # 
 # $1 libname
-# $2 path to the libraray
+# $2 path to the library
 # $3 headers to check 
 # $4 function to check in the library
-# $5 the symobol to define if the function/lib exist
+# $5 the symbol to define if the function/lib exists
 # $6 lang (C or C++)
 AC_DEFUN([do_lib_check],
 [
@@ -80,14 +80,14 @@ else
 	save_flags([], [], [])
 fi
         AC_LANG_PUSH([$6])
-	# If we have mulltiple headers, any missing one will set this to no
+	# If we have multiple headers, any missing one will set this to no
 	cv_libthislib_h=yes
         AC_CHECK_HEADERS([$3], [], [cv_libthislib_h=no], [])
 	if test x$cv_libthislib_h != xno ;  then
 	  AC_SEARCH_LIBS([$4], [$1],
 	     [cv_lib$1=yes
 	      if test -n $5 ; then
-	        AC_DEFINE([$5], [1], [Define to 1 if you lib $1])
+	        AC_DEFINE([$5], [1], [Define to 1 if you have lib $1])
 	      fi
 	     ],
 	     [cv_lib$1=no
@@ -156,7 +156,7 @@ if test "x$with_freetype" != "xno"; then
 
   do_lib_check([freetype], [${freetype_HOME}], [freetype/fttypes.h],
 			 [FT_Open_Face], [HAVE_LIBFREETYPE], [C])
-   if test "x$cv_freetype" = "xno" ; then
+   if test "x$cv_libfreetype" = "xno" ; then
       CPPFLAGS=$ftsave_CPPFLAGS
    fi
 fi
@@ -316,13 +316,51 @@ AC_DEFUN([CHECK_OPENSSL],
 [
 do_arg_with([ssl])
 if test "x$with_ssl" != "xno"; then
-  do_lib_check([crypto], [${ssl_HOME}], [openssl/bio.h], [BIO_read], [HAVE_LIBCRYPTO], [C])
-  do_lib_check([ssl], [${ssl_HOME}], [openssl/ssl.h], [SSL_library_init], [HAVE_LIBSSL], [C])
+  # Homebrew keeps OpenSSL under a keg-only prefix (not on default -I/-L).
+  if test "x$ssl_HOME" = "x"; then
+    if test -f /opt/homebrew/opt/openssl/include/openssl/ssl.h; then
+      ssl_HOME=/opt/homebrew/opt/openssl
+    elif test -f /usr/local/opt/openssl/include/openssl/ssl.h; then
+      ssl_HOME=/usr/local/opt/openssl
+    elif test -f /usr/local/include/openssl/ssl.h; then
+      ssl_HOME=/usr/local
+    fi
+  fi
+  # MinGW --static builds need Windows system libs that OpenSSL references.
+  ssl_extralibs=
+  if test "x$unicon_os" = "xwindows"; then
+    ssl_extralibs="-lcrypt32 -lws2_32 -lgdi32 -ladvapi32 -luser32"
+  fi
+  do_lib_check([crypto], [${ssl_HOME}], [openssl/bio.h], [BIO_read], [HAVE_LIBCRYPTO], [C], [${ssl_extralibs}])
+  do_lib_check([ssl], [${ssl_HOME}], [openssl/ssl.h], [SSL_library_init], [HAVE_LIBSSL], [C], [-lcrypto ${ssl_extralibs}])
   if test "x$cv_libssl" != "xyes" ; then
-    do_lib_check([ssl], [${ssl_HOME}], [openssl/ssl.h], [OPENSSL_init_ssl], [HAVE_LIBSSL], [C])
+    do_lib_check([ssl], [${ssl_HOME}], [openssl/ssl.h], [OPENSSL_init_ssl], [HAVE_LIBSSL], [C], [-lcrypto ${ssl_extralibs}])
   fi
 fi
 #        AC_CHECK_HEADER(openssl/bio.h, [openssl_cv_bio_h=yes], [openssl_cv_bio_h=no])
+])
+
+
+AC_DEFUN([CHECK_LIBSSH],
+[
+do_arg_with([libssh])
+if test "x$with_libssh" != "xno"; then
+  # FreeBSD and Homebrew keep headers under a non-default prefix.
+  # Without -I/-L, later compiles can miss <libssh/libssh.h>.
+  if test "x$libssh_HOME" = "x"; then
+    if test -f /usr/local/include/libssh/libssh.h; then
+      libssh_HOME=/usr/local
+    elif test -f /opt/homebrew/include/libssh/libssh.h; then
+      libssh_HOME=/opt/homebrew
+    fi
+  fi
+  # libssh depends on OpenSSL; MinGW --static also needs Windows system libs.
+  ssh_extralibs=
+  if test "x$unicon_os" = "xwindows"; then
+    ssh_extralibs="-lssl -lcrypto -lcrypt32 -lws2_32 -lgdi32"
+  fi
+  do_lib_check([ssh], [${libssh_HOME}], [libssh/libssh.h], [ssh_new], [HAVE_LIBSSH], [C], [${ssh_extralibs}])
+fi
 ])
 
 
@@ -398,7 +436,7 @@ else
 	save_flags([], [], [])
 fi
         AC_LANG_PUSH([C])
-	# If we have mulltiple headers, any missing one will set this to no
+	# If we have multiple headers, any missing one will set this to no
 	cv_libodbc32_h=yes
 	AC_CHECK_HEADERS([sqlext.h], [], [cv_libodbc32_h=no],
         [[
@@ -409,7 +447,7 @@ fi
 	if test x$cv_libodbc32_h != xno ;  then
 	  AC_SEARCH_LIBS([SQLConnect], [odbc32],
 	     [cv_libodbc=yes
-	      AC_DEFINE([HAVE_LIBODBC], [1], [Define to 1 if you lib odbc])
+	      AC_DEFINE([HAVE_LIBODBC], [1], [Define to 1 if you have lib odbc])
 	     ],
 	     [cv_libodbc=no
 	       fail_and_restore([odbc32 in (${odbc_HOME})])
@@ -471,7 +509,7 @@ do
    [
     AC_LINK_IFELSE(dnl
     [AC_LANG_PROGRAM([[/* no includes */]],
-               [[extern long int $ac_global;  exit((int)$ac_global)]])],
+               [[extern long int $ac_global; return (int)$ac_global]])],
     eval "ac_cv_global_${ac_global}=yes",
     eval "ac_cv_global_${ac_global}=no"
     )
@@ -515,4 +553,29 @@ AC_DEFUN([AC_CFLAG], [{
 			$2
 		])
 	AC_LANG_POP([C])
+	}])
+
+dnl Same as AC_CFLAG but for the C++ compiler (CXX / CXXFLAGS). Use for flags that
+dnl should apply to both C and C++ builds (see GitHub issue #577).
+AC_DEFUN([AC_CXXFLAG], [{
+	AC_LANG_PUSH([C++])
+	ac_cxx_flag_save="$CXXFLAGS"
+	CXXFLAGS="$CXXFLAGS $1"
+	AC_MSG_CHECKING([[whether $CXX supports $1]])
+	AC_COMPILE_IFELSE(
+		[AC_LANG_PROGRAM([[]])],
+		[
+			AC_MSG_RESULT([yes])
+			m4_if([$3], [], [],
+			[
+				CXXFLAGS="$ac_cxx_flag_save"
+				$3
+			])
+		],
+		[
+			CXXFLAGS="$ac_cxx_flag_save"
+			AC_MSG_RESULT([no])
+			$2
+		])
+	AC_LANG_POP([C++])
 	}])

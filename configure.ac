@@ -15,29 +15,39 @@ AH_BOTTOM([#endif          /* __AUTO_CONFIG_H  */])
 #AC_CANONICAL_TARGET
 
 case $host_cpu in
-     *armv7* | *armv6* | *aarch32*)
+    *armv7* | *armv6* | *aarch32*)
         unicon_cpu="arm_32"
-	ARCHBITS="32"
-	AC_DEFINE([ARM], [1], [ARM platform])
+        ARCHBITS="32"
+        AC_DEFINE([ARM], [1], [ARM platform])
         ;;
-     *armv8* | *aarch64*)
+    *armv8* | *aarch64*)
         unicon_cpu="arm_64"
-	ARCHBITS="64"
-	AC_DEFINE([ARM], [1], [ARM platform])
+        ARCHBITS="64"
+        AC_DEFINE([ARM], [1], [ARM platform])
         ;;
-     *riscv64*)
+    *riscv64*)
         unicon_cpu="riscv_64"
-	ARCHBITS="64"
-	AC_DEFINE([RISCV], [1], [RISC-V platform])
+        ARCHBITS="64"
+        AC_DEFINE([RISCV], [1], [RISC-V platform])
         ;;
-     *i386* | *i686*)
+    *i386* | *i686*)
         unicon_cpu="x86_32"
-	ARCHBITS="32"
-	AC_DEFINE([X86], [1], [X86 platform])
-	;;
-     *)
+        ARCHBITS="32"
+        AC_DEFINE([X86], [1], [X86 platform])
+        ;;
+    *powerpc64* | *ppc64*)
+        unicon_cpu="ppc64"
+        ARCHBITS="64"
+        AC_DEFINE([PPC64], [1], [PowerPC 64 platform])
+        ;;
+    *powerpc* | *ppc*)
+        unicon_cpu="ppc"
+        ARCHBITS="32"
+        AC_DEFINE([PPC], [1], [PowerPC platform])
+        ;;
+    *)
         unicon_cpu="$host_cpu"
-	ARCHBITS="64"
+        ARCHBITS="64"
         ;;
 esac
 
@@ -88,6 +98,11 @@ case $host_os in
         unicon_os="aix"
         AC_DEFINE([UNIX], [1], [Unix platform])
         ;;
+     *openbsd*)
+        unicon_os="openbsd"
+	AC_DEFINE([UNIX], [1], [Unix platform])
+	AC_DEFINE([OpenBSD], [1], [OpenBSD OS])
+        ;;
      *bsd*)
         # freebsd for now
         unicon_os="freebsd"
@@ -120,6 +135,9 @@ AC_ARG_ENABLE([graphics3d],
 AC_ARG_ENABLE([multiprograms],
 	[AS_HELP_STRING([--disable-multiprograms], [No multi programs support])],
 			[multiprograms=$enableval], [multiprograms=on])
+AC_ARG_ENABLE([native-coswitch],
+	[AS_HELP_STRING([--disable-native-coswitch], [Use pthread-based coswitch instead of native rswitch (asm/C)])],
+			[native_coswitch=$enableval], [native_coswitch=yes])
 AC_ARG_ENABLE([concurrency],
 	[AS_HELP_STRING([--disable-concurrency], [No concurrent thread support])],
 			[concurrency=$enableval], [concurrency=on])
@@ -132,6 +150,9 @@ AC_ARG_ENABLE([database],
 AC_ARG_ENABLE([ssl],
 	[AS_HELP_STRING([--disable-ssl], [No SSL support])],
 			[ssl=$enableval], [ssl=on])
+AC_ARG_ENABLE([ssh],
+	[AS_HELP_STRING([--disable-ssh], [No SSH support])],
+			[ssh=$enableval], [ssh=on])
 AC_ARG_ENABLE([audio],
 	[AS_HELP_STRING([--disable-audio], [No audio support])],
 			[audio=$enableval], [audio=on])
@@ -199,6 +220,21 @@ AC_ARG_ENABLE([werror],
 AC_ARG_ENABLE([warnings],
 	[AS_HELP_STRING([--enable-warnings], [Turn on most types of compiler warnings])],
 			[warn=yes], [warn=no])
+AC_ARG_ENABLE([asan],
+	[AS_HELP_STRING([--enable-asan], [Enable AddressSanitizer (-fsanitize=address); use with --enable-debug for symbols; uses -O1 when CFLAGS is unset and debug is off])],
+			[asan=$enableval], [asan=no])
+AC_ARG_ENABLE([tsan],
+	[AS_HELP_STRING([--enable-tsan], [Enable ThreadSanitizer (-fsanitize=thread); incompatible with --enable-asan; use with --enable-debug for symbols; uses -O1 when CFLAGS is unset and debug is off])],
+			[tsan=$enableval], [tsan=no])
+AC_ARG_ENABLE([ubsan],
+	[AS_HELP_STRING([--enable-ubsan], [Enable UndefinedBehaviorSanitizer (-fsanitize=undefined); may be combined with --enable-asan or --enable-tsan])],
+			[ubsan=$enableval], [ubsan=no])
+AC_ARG_ENABLE([msan],
+	[AS_HELP_STRING([--enable-msan], [Enable MemorySanitizer (-fsanitize=memory); incompatible with ASan/TSan/HWASan; typically needs an MSan-instrumented libc; uses -O1 when CFLAGS is unset and debug is off])],
+			[msan=$enableval], [msan=no])
+AC_ARG_ENABLE([hwasan],
+	[AS_HELP_STRING([--enable-hwasan], [Enable HardwareAssisted AddressSanitizer (-fsanitize=hwaddress); AArch64-oriented alternative to ASan; incompatible with ASan/TSan/MSan])],
+			[hwasan=$enableval], [hwasan=no])
 
 AC_ARG_ENABLE([uniconx],
 	[AS_HELP_STRING([--enable-uniconx], [Change executable names to co-exist with Icon])],
@@ -208,8 +244,20 @@ AC_ARG_ENABLE([uniconx],
 # Save flags
 orig_cflags="${CFLAGS:-}"
 CFLAGS=""
+orig_cxxflags="${CXXFLAGS:-}"
+CXXFLAGS=""
 AC_LANG([C])
 AC_USE_SYSTEM_EXTENSIONS
+AC_CONFIG_SRCDIR([src/runtime/imain.r])
+AC_PROG_CC
+dnl Discover CXX before any AC_CXXFLAG; otherwise autoconf inlines AC_PROG_CXX at the
+dnl first C++ compile with empty CXXFLAGS and later resets CXXFLAGS to defaults.
+dnl Do not set CXXFLAGS from orig_cxxflags here (matches CFLAGS): user flags are appended
+dnl once after AC_CXXFLAG probes; a pre-restore would duplicate them at the final append.
+AC_PROG_CXX
+if test "z$orig_cxxflags" = "z" ; then
+  CXXFLAGS=""
+fi
 # Try CC 11
 ac_cc="$CC"
 
@@ -233,6 +281,7 @@ AC_CFLAG([$ARCHFLAG],[
 			 CFLAGS="$CFLAGS $ARCHFLAG"
 			 LDFLAGS="$LDFLAGS $ARCHFLAG"
 			 ASFLAGS="$ASFLAGS $ARCHFLAG"
+			 CXXFLAGS="$CXXFLAGS $ARCHFLAG"
 			 ] )
 
 if test x"$verbosebuild" = x"yes" ; then
@@ -280,6 +329,16 @@ if test x"$verifyheap" = x"yes" ; then
     verifyheapreport="VerifyHeap"
 fi
 
+dnl At most one of address / thread / memory / hardware address sanitizers.
+sancount=0
+test x"$asan" = x"yes" && sancount=`expr $sancount + 1`
+test x"$tsan" = x"yes" && sancount=`expr $sancount + 1`
+test x"$msan" = x"yes" && sancount=`expr $sancount + 1`
+test x"$hwasan" = x"yes" && sancount=`expr $sancount + 1`
+if test "$sancount" -gt 1 ; then
+  AC_MSG_ERROR([Only one of --enable-asan, --enable-tsan, --enable-msan, or --enable-hwasan may be enabled. --enable-ubsan may be combined with one of them.])
+fi
+
 if test x"$udbtools" = x"yes" ; then
   UDBTOOLS=udbtools
 fi
@@ -289,20 +348,80 @@ if test x"$progs" = x"yes" ; then
 fi
 
 # honor custom flags
+dnl -O1 recommended when using heavyweight sanitizers (asan/tsan/msan/hwasan) and CFLAGS was not preset.
 if test "z$orig_cflags" = "z"; then
   if test x"$debug" = x"yes" ; then
      AC_CFLAG([-g])
-     AC_CFLAG([-O0])
+     if test x"$asan" = x"yes" || test x"$tsan" = x"yes" || \
+        test x"$msan" = x"yes" || test x"$hwasan" = x"yes" ; then
+       AC_CFLAG([-O1])
+     else
+       AC_CFLAG([-O0])
+     fi
+  elif test x"$asan" = x"yes" || test x"$tsan" = x"yes" || \
+       test x"$msan" = x"yes" || test x"$hwasan" = x"yes" ; then
+     AC_CFLAG([-O1])
   else
     AC_CFLAG([-O2], [
     AC_CFLAG([-Os])
     ])
   fi
 fi
+if test "z$orig_cxxflags" = "z"; then
+  if test x"$debug" = x"yes" ; then
+     AC_CXXFLAG([-g])
+     if test x"$asan" = x"yes" || test x"$tsan" = x"yes" || \
+        test x"$msan" = x"yes" || test x"$hwasan" = x"yes" ; then
+       AC_CXXFLAG([-O1])
+     else
+       AC_CXXFLAG([-O0])
+     fi
+  elif test x"$asan" = x"yes" || test x"$tsan" = x"yes" || \
+       test x"$msan" = x"yes" || test x"$hwasan" = x"yes" ; then
+     AC_CXXFLAG([-O1])
+  else
+    AC_CXXFLAG([-O2], [
+    AC_CXXFLAG([-Os])
+    ])
+  fi
+fi
+
+if test x"$asan" = x"yes" ; then
+  AC_CFLAG([-fsanitize=address], [AC_MSG_ERROR([AddressSanitizer (-fsanitize=address) is not supported by $CC])])
+  AC_CXXFLAG([-fsanitize=address], [AC_MSG_ERROR([AddressSanitizer (-fsanitize=address) is not supported by $CXX])])
+  LDFLAGS="$LDFLAGS -fsanitize=address"
+fi
+
+if test x"$tsan" = x"yes" ; then
+  AC_CFLAG([-fsanitize=thread], [AC_MSG_ERROR([ThreadSanitizer (-fsanitize=thread) is not supported by $CC])])
+  AC_CXXFLAG([-fsanitize=thread], [AC_MSG_ERROR([ThreadSanitizer (-fsanitize=thread) is not supported by $CXX])])
+  LDFLAGS="$LDFLAGS -fsanitize=thread"
+  AC_DEFINE([ThreadSanitizer], [1], [Define if built with ThreadSanitizer (--enable-tsan).])
+fi
+
+if test x"$msan" = x"yes" ; then
+  AC_CFLAG([-fsanitize=memory], [AC_MSG_ERROR([MemorySanitizer (-fsanitize=memory) is not supported by $CC])])
+  AC_CXXFLAG([-fsanitize=memory], [AC_MSG_ERROR([MemorySanitizer (-fsanitize=memory) is not supported by $CXX])])
+  LDFLAGS="$LDFLAGS -fsanitize=memory"
+fi
+
+if test x"$hwasan" = x"yes" ; then
+  AC_CFLAG([-fsanitize=hwaddress], [AC_MSG_ERROR([HardwareAssisted AddressSanitizer (-fsanitize=hwaddress) is not supported by $CC])])
+  AC_CXXFLAG([-fsanitize=hwaddress], [AC_MSG_ERROR([HardwareAssisted AddressSanitizer (-fsanitize=hwaddress) is not supported by $CXX])])
+  LDFLAGS="$LDFLAGS -fsanitize=hwaddress"
+fi
+
+if test x"$ubsan" = x"yes" ; then
+  AC_CFLAG([-fsanitize=undefined], [AC_MSG_ERROR([UndefinedBehaviorSanitizer (-fsanitize=undefined) is not supported by $CC])])
+  AC_CXXFLAG([-fsanitize=undefined], [AC_MSG_ERROR([UndefinedBehaviorSanitizer (-fsanitize=undefined) is not supported by $CXX])])
+  LDFLAGS="$LDFLAGS -fsanitize=undefined"
+fi
 
 if test x"$warn" = x"yes" ; then
   AC_CFLAG([-Wall])
   AC_CFLAG([-Wno-missing-braces])
+  AC_CXXFLAG([-Wall])
+  AC_CXXFLAG([-Wno-missing-braces])
 fi
 
 
@@ -311,13 +430,16 @@ fi
 #  AC_CFLAG([-Wmissing-declarations])
 #fi
 
-# We always want these CFLAGS if available, the second one is neseccary for a stable runtime
+# We always want these CFLAGS if available; the second one is necessary for a stable runtime
 AC_CFLAG([-fno-omit-frame-pointer])
 
 AC_CFLAG([-fno-strict-aliasing])
+AC_CXXFLAG([-fno-omit-frame-pointer])
+AC_CXXFLAG([-fno-strict-aliasing])
 
 if test x"$CC" = x"clang" || test x"$unicon_os" = x"macos" || test x"$unicon_os" = x"freebsd" ; then
    AC_CFLAG([-Werror -Wno-parentheses-equality], [], [CFLAGS="$CFLAGS -Wno-parentheses-equality"])
+   AC_CXXFLAG([-Werror -Wno-parentheses-equality], [], [CXXFLAGS="$CXXFLAGS -Wno-parentheses-equality"])
 fi
 
 #if test x"${enable_werror}" = x"yes" ; then
@@ -326,9 +448,6 @@ fi
 
 #AC_USE_SYSTEM_EXTENSIONS
 
-AC_CONFIG_SRCDIR([src/runtime/imain.r])
-AC_PROG_CC
-AC_PROG_CXX
 AC_PROG_CPP
 AC_PROG_RANLIB
 AC_CHECK_LIB(socket, socket)
@@ -390,6 +509,9 @@ case $unicon_host in
      *aix*)
        ;;
      *bsd*)
+      # Like Linux: iconx must export rt symbols so dlopen'd libcfunc.so can bind cnv_* etc.
+      LDFLAGS="$LDFLAGS -rdynamic "
+      RLINK="-rdynamic -Wl,-E "
         ;;
      *macos*)
        LDDYN="-Xlinker -undefined -Xlinker dynamic_lookup -shared "
@@ -404,7 +526,8 @@ case $unicon_host in
        DASHG="-G"
        LDFLAGS="$LDFLAGS --static -mnop-fun-dllimport -mwin32 -DPTW32_STATIC_LIB "
        CPPFLAGS="$CPPFLAGS --static -mnop-fun-dllimport -mwin32 -DPTW32_STATIC_LIB "
-       LIBS="$LIBS -lgdi32 -lws2_32"
+       # crypt32 is required when statically linking OpenSSL (and thus libssh).
+       LIBS="$LIBS -lgdi32 -lws2_32 -liphlpapi -lcrypt32"
 
        WSTKLDFLAG="-Xlinker --stack -Xlinker 8192000"
        WGLIBS="-lopengl32 -lglu32 -lkernel32 -luser32 -lgdi32 -lcomdlg32 -lwinmm"
@@ -427,12 +550,82 @@ case $unicon_host in
         ;;
 esac
 
+if test x"$asan" = x"yes" ; then
+  CFDYN="$CFDYN -fsanitize=address"
+  LDDYN="$LDDYN -fsanitize=address"
+fi
+if test x"$tsan" = x"yes" ; then
+  CFDYN="$CFDYN -fsanitize=thread"
+  LDDYN="$LDDYN -fsanitize=thread"
+fi
+if test x"$msan" = x"yes" ; then
+  CFDYN="$CFDYN -fsanitize=memory"
+  LDDYN="$LDDYN -fsanitize=memory"
+fi
+if test x"$hwasan" = x"yes" ; then
+  CFDYN="$CFDYN -fsanitize=hwaddress"
+  LDDYN="$LDDYN -fsanitize=hwaddress"
+fi
+if test x"$ubsan" = x"yes" ; then
+  CFDYN="$CFDYN -fsanitize=undefined"
+  LDDYN="$LDDYN -fsanitize=undefined"
+fi
+
 if test "x$iconc" = "xyes" || test "x$iconc" = "xon" ; then
        ICONCTARGET=Iconc
 fi
 
 if test "x$orig_cflags" != "x" ; then
   CFLAGS="$CFLAGS $orig_cflags"
+fi
+
+if test "x$orig_cxxflags" != "x" ; then
+  CXXFLAGS="$CXXFLAGS $orig_cxxflags"
+fi
+
+dnl When concurrency is enabled, use C11 atomics (<stdatomic.h>) for the
+dnl runtime's lock-free flags and counters if the compiler provides them;
+dnl otherwise the runtime keeps using its mutexes.  Linked rather than only
+dnl compiled, since some targets need libatomic.  Run after CFLAGS are
+dnl finalized so e.g. -std=c11 is visible to the probe.
+if test "x$concurrency" != "xno"; then
+  AC_CACHE_CHECK([for C11 atomics],
+    [ac_cv_c11_atomics],
+    [AC_LINK_IFELSE(
+      [AC_LANG_SOURCE([[
+#include <stdatomic.h>
+static atomic_int ua_i;
+static atomic_intptr_t ua_w;
+int main(void) {
+   atomic_fetch_add_explicit(&ua_w, 1, memory_order_relaxed);
+   atomic_store_explicit(&ua_i, 1, memory_order_release);
+   atomic_thread_fence(memory_order_acquire);
+   return atomic_load_explicit(&ua_i, memory_order_relaxed) - 1;
+}
+]])],
+      [ac_cv_c11_atomics=yes],
+      [ac_cv_c11_atomics=no])])
+  if test "x$ac_cv_c11_atomics" = "xyes"; then
+    AC_DEFINE([HAVE_C11_ATOMICS], [1],
+      [Define if the compiler provides C11 <stdatomic.h> atomics])
+  fi
+  dnl Atomic operations on plain (non-_Atomic) words, for counters kept in
+  dnl fields shared with other data, such as a record's serial number.
+  AC_CACHE_CHECK([for atomic builtins on plain words],
+    [ac_cv_atomic_builtins],
+    [AC_LINK_IFELSE(
+      [AC_LANG_SOURCE([[
+static long ub_w;
+int main(void) {
+   return (int)__atomic_fetch_add(&ub_w, 1, __ATOMIC_RELAXED);
+}
+]])],
+      [ac_cv_atomic_builtins=yes],
+      [ac_cv_atomic_builtins=no])])
+  if test "x$ac_cv_atomic_builtins" = "xyes"; then
+    AC_DEFINE([HAVE_ATOMIC_BUILTINS], [1],
+      [Define if the compiler provides __atomic builtins on plain words])
+  fi
 fi
 
 if test x"$debug" = x"yes" ; then
@@ -548,12 +741,12 @@ if test "x$thin" = "xyes"; then
       plugins=no
    fi
 
-   if test "x$database" = "xon"; then
-      database=no
+   if test "x$ssl" = "xon"; then
+      ssl=no
    fi
 
-   if test "x$databse" = "xon"; then
-      ssl=no
+   if test "x$ssh" = "xon"; then
+      ssh=no
    fi
 
    if test "x$multiprograms" = "xon"; then
@@ -574,6 +767,13 @@ AC_REPLACE_FUNCS(getopt)
 AC_FUNC_FORK()
 AC_CHECK_LIB(dbm,main)
 AC_CHECK_LIB(ndbm,main)
+
+# Probes needed by the vendored GDBM in src/gdbm; its autoconf.h maps
+# these (and the generic checks above) onto the names GDBM expects.
+AC_CHECK_SIZEOF(off_t)
+AC_FUNC_MMAP
+AC_CHECK_FUNCS([msync lockf])
+AC_CHECK_MEMBERS([struct stat.st_blksize])
 
 # we don't need sqlite to be added to $LIBS, not yet at least
 saved_libs="$LIBS"
@@ -624,6 +824,11 @@ if ! test "x$graphics" = "xno"; then
   if test "x$cv_libX11" = xyes -o "ms$unicon_os" = "mswindows" ; then
 
     CHECK_FREETYPE()
+    # iconc must pass -I.../freetype2 so gcc finds ft2build.h from rt.h
+    if test "x$cv_libfreetype" = "xyes" ; then
+      AC_DEFINE_UNQUOTED([ICONC_FREETYPE_CPPFLAGS], ["$FREETYPE_CFLAGS"],
+        [Extra cpp flags for iconc when compiling user C (ft2build.h).])
+    fi
     CHECK_XFT()
     CHECK_JPEG()
     CHECK_PNG()
@@ -667,7 +872,8 @@ if ! test "x$graphics" = "xno"; then
      *linux*)
         ;;
      *solaris*)
-        XLIBS = -L/usr/X11R6/lib/64 -R/usr/X11R6/lib/64 -lXpm -lX11       ;;
+        XLIBS="-L/usr/X11R6/lib/64 -R/usr/X11R6/lib/64 -lXpm -lX11"
+        ;;
      *aix*)
         ;;
      *bsd*)
@@ -702,18 +908,27 @@ fi
   AC_SUBST(DASHG)
   AC_SUBST(STRIP)
 
-if test -f src/asm/$unicon_host-rswitch.s; then
-    echo "Native coswitch detected"
-    cp src/asm/$unicon_host-rswitch.s src/common/rswitch.s
+# Co-expression switch: path relative to TOPDIR (see Makedefs.in RSWITCH_SRC).  We do not copy
+# into src/common/rswitch.[csS]; leftover files from older configure runs are removed by
+# distclean/Pure in the top Makefile.
+if test "x$native_coswitch" = "xno"; then
+    echo "Native coswitch disabled, build will use pthreadcoswitch.c"
+    AC_DEFINE([NoNativeCoswitch], [1], [No Native Coswitch])
+    RSWITCH_REL=src/common/pthreadcoswitch.c
+elif test -f "$srcdir/src/asm/$unicon_host-rswitch.s"; then
+    echo "Native coswitch (assembler) available for $unicon_host"
+    RSWITCH_REL=src/asm/$unicon_host-rswitch.s
+elif test -f "$srcdir/src/asm/$unicon_host-rswitch.c"; then
+    echo "Native coswitch (C) available for $unicon_host"
+    RSWITCH_REL=src/asm/$unicon_host-rswitch.c
 else
-   if test -f src/asm/$unicon_host-rswitch.c; then
-      echo "Native coswitch detected"
-      cp src/asm/$unicon_host-rswitch.c src/common/rswitch.c
-   else
-      echo "No native coswitch for $unicon_host , switching to pthreadcoswitch..."
-      AC_DEFINE([NoNativeCoswitch], [1], [No Native coswitch])
-      cp src/common/pthreadcoswitch.c src/common/rswitch.c
-   fi
+    echo "No native coswitch for $unicon_host; build will use pthreadcoswitch.c"
+    AC_DEFINE([NoNativeCoswitch], [1], [No Native Coswitch])
+    RSWITCH_REL=src/common/pthreadcoswitch.c
+fi
+AC_SUBST([RSWITCH_REL])
+if test "x$RSWITCH_REL" = "xsrc/common/pthreadcoswitch.c" && test "x$concurrency" = "xno"; then
+  AC_MSG_ERROR([pthread-based co-expression switching requires concurrency])
 fi
 
 if ! test "x$plugins" = "xno"; then
@@ -724,12 +939,15 @@ if ! test "x$plugins" = "xno"; then
   if test "x$ac_cv_search_dlopen" != "xno" ; then
     PLUGINS=upexample
     AC_CHECK_LIB(lxc,lxc_get_version,[PLUGINS="$PLUGINS lxcunicon"])
-    AC_SUBST(PLUGINS)
+  else
+    PLUGINS=
   fi
 else
   AC_DEFINE([NoLoadFunc], [1], [No LoadFunc])
   CFUNCTARGET="disabled"
+  PLUGINS=
 fi
+AC_SUBST([PLUGINS])
 #AC_CHECK_FUNC(dlopen,
 #	[AC_DEFINE([HAVE_DLOPEN], [1], [dlopen for shared object via c functions])])
 
@@ -772,6 +990,10 @@ else
    AC_DEFINE([NoDatabase], [1], [No Database])
 fi
 
+if ! test "x$ssh" = "xno" ; then
+   CHECK_LIBSSH()
+fi
+
 # autoconf does this too late, so just do it now...
 test "x$prefix" = xNONE && prefix=$ac_default_prefix
 test "x$exec_prefix" = xNONE && exec_prefix='${prefix}'
@@ -779,6 +1001,7 @@ test "x$exec_prefix" = xNONE && exec_prefix='${prefix}'
 
 if test x"$werror" = x"yes" ; then
   AC_CFLAG([-Werror])
+  AC_CXXFLAG([-Werror])
 fi
 
 
@@ -823,6 +1046,13 @@ AC_CHECK_GLOBAL(sys_nerr)
 AC_CHECK_GLOBAL(sys_errlist)
 AC_VAR_TIMEZONE_EXTERNALS()
 AC_STRUCT_TIMEZONE()
+
+dnl Plugin shared libraries use -shared; -no-pie (added for musl executables) conflicts with
+dnl -shared on Alpine (undefined reference to main from crt1). Expose linker flags without it.
+dnl Strip only a standalone -no-pie token (space-delimited), not substrings like -Wl,-no-pie.
+PLUGIN_LDFLAGS=`echo " $LDFLAGS " | sed 's/ -no-pie / /g' | sed 's/  */ /g' | sed 's/^ //;s/ $//'`
+AC_SUBST([PLUGIN_LDFLAGS])
+
 AC_CONFIG_FILES([Makefile:Makefile.in],)
 AC_CONFIG_FILES([Makedefs:Makedefs.in],)
 AC_CONFIG_FILES([Makedefs.uni:Makedefs.uni.in],)
@@ -860,7 +1090,7 @@ if test "x$graphics" = "xyes" || test "x$graphics" = "xon" ; then
   if test "x$cv_libfreetype"   = "xyes" ; then
     gtmp="$gtmp+Freetype " ; else gtmp="$gtmp-FreeType " ; fi
 else
-#disbaled graphics
+#disabled graphics
   gtmp=" ! Graphics"
 fi
 
@@ -893,12 +1123,12 @@ if test "x$graphics3d" = "xyes" || test "x$graphics3d" = "xon" ; then
     gdtmp=" + Graphics3D         : $gdtmp"
   else
     if test "x$graphics3d" = "xyes" ; then
-        AC_MSG_ERROR("3D graphics requires opengl librarry")
+        AC_MSG_ERROR("3D graphics requires opengl library")
      fi
     gdtmp=" - Graphics3D         : $gdtmp"
   fi
 else
-#disbaled graphics3D
+#disabled graphics3D
   gdtmp=" ! Graphics3D"
 fi
 
@@ -980,7 +1210,7 @@ if test "x$audio" = "xyes" || test "x$audio" = "xon" ; then
   fi
 
 else
-#disbaled Audio
+#disabled Audio
   atmp=" ! Audio"
 fi
 
@@ -1023,7 +1253,7 @@ if test "x$voip" = "xyes" || test "x$voip" = "xon" ; then
   fi
 
 else
-#disbaled Voip
+#disabled Voip
   vtmp=" ! VOIP"
 fi
 
@@ -1042,8 +1272,8 @@ if test "x$database" = "xyes" || test "x$database" = "xon" ; then
   fi
   fi
 else
-#disbaled databse
-  dtmp=" ! Databse"
+#disabled database
+  dtmp=" ! Database"
 fi
 
 # want ssl
@@ -1052,16 +1282,39 @@ if test "x$ssl" = "xyes" || test "x$ssl" = "xon" ; then
      stmp=" + SSL                : +ssl"
   else
      if test "x$ssl" = "xyes" ; then
-        AC_MSG_ERROR("ssl requirels libssl-dev or equivalent")
+        AC_MSG_ERROR("ssl requires libssl-dev or equivalent")
      fi
      stmp=" - SSL                : -ssl"
   fi
 else
-#disbaled ssl
+#disabled ssl
   stmp=" ! SSL"
 fi
 
+# want ssh
+if test "x$ssh" = "xyes" || test "x$ssh" = "xon" ; then
+  if test "x$cv_libssh"      = "xyes" ; then
+     sshtmp=" + SSH                : +ssh"
+  else
+     if test "x$ssh" = "xyes" ; then
+        AC_MSG_ERROR("ssh requires libssh-dev or equivalent")
+     fi
+     sshtmp=" - SSH                : -ssh"
+  fi
+else
+#disabled ssh
+  sshtmp=" ! SSH"
+fi
+
 revision=`./config/scripts/version.sh "revision"`
+
+san_summary=""
+test x"$asan" = x"yes" && san_summary="$san_summary${san_summary:+ }ASan"
+test x"$tsan" = x"yes" && san_summary="$san_summary${san_summary:+ }TSan"
+test x"$ubsan" = x"yes" && san_summary="$san_summary${san_summary:+ }UBSan"
+test x"$msan" = x"yes" && san_summary="$san_summary${san_summary:+ }MSan"
+test x"$hwasan" = x"yes" && san_summary="$san_summary${san_summary:+ }HWASan"
+test -z "$san_summary" && san_summary=no
 
 cat << EOF  > unicon-config.log
 --------------------------------------------------
@@ -1081,6 +1334,7 @@ LDDYN    : $LDDYN
 prefix   :  $prefix
 Verbose  :  $verbosebuild
 Debug    :  $debug $debugheapreport $verifyheapreport
+San      :  $san_summary
 Warnings :  $warn
 Werror   :  $werror
 Devmode  :  $devmode
@@ -1095,6 +1349,7 @@ $atmp
 $vtmp
 $dtmp
 $stmp
+$sshtmp
 EOF
 
 
@@ -1110,7 +1365,7 @@ fi
 
 if test "x$iconc"  = "xyes" || test "x$iconc" = "xon" ; then
   if test "x$coniconc"      = "xyes" ; then
-     echo " + Compiler: with concurrency >> unicon-config.log"
+     echo " + Compiler: with concurrency" >> unicon-config.log
   else
      echo " + Compiler: no concurrency" >> unicon-config.log
   fi

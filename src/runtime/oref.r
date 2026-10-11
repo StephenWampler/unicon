@@ -139,9 +139,28 @@ operator{*} ! bang(underef x -> dx)
              * x is a file.  Read the next line into the string space
              *  and suspend the newly allocated string.
              */
+            status = BlkLoc(dx)->File.status;
+
+#ifdef PosixFns
+#if HAVE_LIBSSL
+            /*
+             * Crypto handles are not line streams; fd.fp is the CryptoFile.
+             */
+            if (status & Fs_Crypto)
+               fail;
+#endif                                  /* HAVE_LIBSSL */
+#if HAVE_LIBSSH
+            /*
+             * SSH sessions without a channel are not line streams.
+             * Channels carry Fs_Socket and generate input lines below.
+             */
+            if ((status & Fs_SSH) && !(status & Fs_Socket))
+               fail;
+#endif                                  /* HAVE_LIBSSH */
+#endif                                  /* PosixFns */
+
             fd = BlkD(dx,File)->fd.fp;
 
-            status = BlkLoc(dx)->File.status;
             if ((status & Fs_Read) == 0)
                runerr(212, dx);
 
@@ -320,7 +339,7 @@ operator{*} ! bang(underef x -> dx)
                   else
 #endif                                  /* Dbm */
 
-                  if ((slen = getstrg(sbuf,MaxCvtLen,BlkD(dx,File))) == -1)
+                  if ((slen = getstrg(sbuf,MaxCvtLen,&dx)) == -1)
                      fail;
                   rlen = slen < 0 ? (word)MaxCvtLen : slen;
 
@@ -536,9 +555,16 @@ operator{0,1} ? random(underef x -> dx)
 #if ConcurrentCOMPILER
             CURTSTATE();
 #endif                                  /* ConcurrentCOMPILER */
+            /*
+             * Hold a shared list's lock from reading the size to locating
+             * the element, or another thread can shrink it in between.
+             */
+            MUTEX_LOCKBLK_CONTROLLED(BlkD(dx,List), "?x: lock list");
             val = BlkD(dx,List)->size;
-            if (val <= 0)
+            if (val <= 0) {
+               MUTEX_UNLOCKBLK(BlkD(dx,List), "?x: unlock list");
                fail;
+               }
             rval = RandVal;
             rval *= val;
             i = (word)rval + 1;
@@ -570,10 +596,12 @@ operator{0,1} ? random(underef x -> dx)
                i += Blk(bp,Lelem)->first - j;
                if (i >= bp->Lelem.nslots)
                   i -= bp->Lelem.nslots;
+               MUTEX_UNLOCKBLK(BlkD(dx,List), "?x: unlock list");
                return struct_var(&(bp->Lelem.lslots[i]), bp);
 #ifdef Arrays
                }
-            else if (BlkType(bp)==T_Realarray)
+            MUTEX_UNLOCKBLK(BlkD(dx,List), "?x: unlock list");
+            if (BlkType(bp)==T_Realarray)
                return  struct_var(&((struct b_realarray *)(bp))->a[i-1], bp);
             else  /* if (Blk(bp, Intarray)->title==T_Intarray)     assumed to be int array*/
                return  struct_var(&((struct b_intarray *)(bp))->a[i-1], bp);
@@ -784,13 +812,19 @@ operator{0,1} [:] sect(underef x -> dx, i, j)
 
       body {
          C_integer t;
+         int rv;
 
+         /*
+          * Hold a shared list's lock while the bounds are checked and the
+          * section is copied.
+          */
+         MUTEX_LOCKBLK_CONTROLLED(BlkD(dx,List), "x[i:j]: lock list");
          i = cvpos((long)i, (long)BlkD(dx,List)->size);
-         if (i == CvtFail)
-            fail;
          j = cvpos((long)j, (long)BlkD(dx,List)->size);
-         if (j == CvtFail)
+         if (i == CvtFail || j == CvtFail) {
+            MUTEX_UNLOCKBLK(BlkD(dx,List), "x[i:j]: unlock list");
             fail;
+            }
          if (i > j) {
             t = i;
             i = j;
@@ -800,19 +834,19 @@ operator{0,1} [:] sect(underef x -> dx, i, j)
 #ifdef Arrays
          if (BlkD(dx,List)->listtail!=NULL){
 #endif                                  /* Arrays */
-            if (cplist(&dx, &result, i, j) == RunError)
-               runerr(0);
+            rv = cplist(&dx, &result, i, j);
 #ifdef Arrays
                }
          else if ( BlkType(BlkD(dx,List)->listhead)==T_Realarray){
-            if (cprealarray(&dx, &result, i, j) == RunError)
-               runerr(0);
+            rv = cprealarray(&dx, &result, i, j);
             }
          else /*if ( BlkType(BlkD(dx,List)->listhead)==T_Intarray)*/{
-            if (cpintarray(&dx, &result, i, j) == RunError)
-               runerr(0);
+            rv = cpintarray(&dx, &result, i, j);
             }
 #endif                                  /* Arrays */
+         MUTEX_UNLOCKBLK(BlkD(dx,List), "x[i:j]: unlock list");
+         if (rv == RunError)
+            runerr(0);
          return result;
          }
       }
@@ -886,7 +920,7 @@ operator{0,1} [] subsc(underef x -> dx,y)
    type_case dx of {
       file: {
          abstract {
-            return string ++ integer /* bug: this value is for messaging */
+            return string ++ integer ++ list
             }
 
          body {
@@ -990,7 +1024,132 @@ operator{0,1} [] subsc(underef x -> dx,y)
                }
             else
 #endif                                  /* Messaging */
+               {
+#ifdef PosixFns
+               tended char *c_y;
+               int peek_rc;
+#ifdef Concurrent
+               word peek_mtx = BlkD(dx,File)->mutexid;
+#endif                                  /* Concurrent */
+               if (!cnv:C_string(y, c_y))
+                  runerr(103, y);
+
+#if HAVE_LIBSSL
+               if (status & Fs_Crypto) {
+                  struct CryptoFile *cf;
+#ifdef Concurrent
+                  MUTEX_LOCKID_CONTROLLED(peek_mtx);
+#endif                                  /* Concurrent */
+                  status = BlkD(dx,File)->status;
+                  cf = BlkD(dx,File)->fd.cf;
+                  if (cf == NULL || (status & Fs_Crypto) == 0) {
+#ifdef Concurrent
+                     MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                     runerr(174, dx);
+                     }
+                  peek_rc = crypto_peek(cf, c_y, &result);
+#ifdef Concurrent
+                  MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                  if (peek_rc == FILEPEEK_ERR)
+                     runerr(1302, y);
+                  if (peek_rc == FILEPEEK_FAIL)
+                     fail;
+                  return result;
+                  }
+#endif                                  /* HAVE_LIBSSL */
+#if HAVE_LIBSSH
+               if (status & Fs_SSH) {
+                  struct SSHfile *sshf;
+#ifdef Concurrent
+                  MUTEX_LOCKID_CONTROLLED(peek_mtx);
+#endif                                  /* Concurrent */
+                  status = BlkD(dx,File)->status;
+                  sshf = BlkD(dx,File)->fd.sshf;
+                  if (sshf == NULL || (status & Fs_SSH) == 0) {
+#ifdef Concurrent
+                     MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                     runerr(174, dx);
+                     }
+                  peek_rc = ssh_peek(sshf, c_y, &result);
+#ifdef Concurrent
+                  MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                  if (peek_rc == FILEPEEK_ERR)
+                     runerr(1331, y);
+                  if (peek_rc == FILEPEEK_FAIL)
+                     fail;
+                  return result;
+                  }
+#endif                                  /* HAVE_LIBSSH */
+#if HAVE_LIBSSL
+               if ((status & Fs_Encrypt) && (status & Fs_Socket)) {
+                  SSL *ssl;
+#ifdef Concurrent
+                  MUTEX_LOCKID_CONTROLLED(peek_mtx);
+#endif                                  /* Concurrent */
+                  status = BlkD(dx,File)->status;
+                  ssl = BlkD(dx,File)->fd.ssl;
+                  if (ssl == NULL ||
+                      ((status & Fs_Encrypt) == 0) ||
+                      ((status & Fs_Socket) == 0)) {
+#ifdef Concurrent
+                     MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                     runerr(174, dx);
+                     }
+                  peek_rc = tls_peek(BlkD(dx,File), c_y, &result);
+#ifdef Concurrent
+                  MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                  if (peek_rc == FILEPEEK_ERR)
+                     runerr(1326, y);
+                  if (peek_rc == FILEPEEK_FAIL)
+                     fail;
+                  return result;
+                  }
+#endif                                  /* HAVE_LIBSSL */
+               if (status & Fs_Socket) {
+                  int s;
+#ifdef Concurrent
+                  MUTEX_LOCKID_CONTROLLED(peek_mtx);
+#endif                                  /* Concurrent */
+                  status = BlkD(dx,File)->status;
+                  if ((status & Fs_Socket) == 0) {
+#ifdef Concurrent
+                     MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                     runerr(174, dx);
+                     }
+#if HAVE_LIBSSL
+                  if (status & Fs_Encrypt) {
+                     SSL *ssl = BlkD(dx,File)->fd.ssl;
+                     if (ssl == NULL) {
+#ifdef Concurrent
+                        MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                        runerr(174, dx);
+                        }
+                     s = SSL_get_fd(ssl);
+                     }
+                  else
+#endif                                  /* HAVE_LIBSSL */
+                     s = BlkD(dx,File)->fd.fd;
+                  peek_rc = sock_peek(s, c_y, &result);
+#ifdef Concurrent
+                  MUTEX_UNLOCKID(peek_mtx);
+#endif                                  /* Concurrent */
+                  if (peek_rc == FILEPEEK_ERR)
+                     runerr(1310, y);
+                  if (peek_rc == FILEPEEK_FAIL)
+                     fail;
+                  return result;
+                  }
+#endif                                  /* PosixFns */
                runerr(114,dx);
+               }
             }
          }
 
@@ -1018,10 +1177,13 @@ operator{0,1} [] subsc(underef x -> dx,y)
             EVVal(y, E_Lsub);
 
             /*
-             * Make sure that subscript y is in range.
+             * Make sure that subscript y is in range.  Reload lp after
+             * locking: the lock may wait through a collection, which can
+             * move the list block.
              */
             lp = BlkD(dx, List);
             MUTEX_LOCKBLK_CONTROLLED(lp, "x[y]: lock list");
+            lp = BlkD(dx, List);
             i = cvpos((long)y, (long)lp->size);
             if (i == CvtFail || i > lp->size){
                MUTEX_UNLOCKBLK(lp, "x[y]: unlock list");
@@ -1057,9 +1219,12 @@ operator{0,1} [] subsc(underef x -> dx,y)
                return struct_var(&bp->Lelem.lslots[i], bp);
 #ifdef Arrays
             }
-            else if (BlkType(bp)==T_Realarray)
-                  return  struct_var(&((struct b_realarray *)(bp))->a[i-1], bp);
+            else if (BlkType(bp)==T_Realarray) {
+               MUTEX_UNLOCKBLK(BlkD(dx,List), "x[y]: unlock list");
+               return  struct_var(&((struct b_realarray *)(bp))->a[i-1], bp);
+               }
             else { /* if (BlkType(bp)==T_Intarray)     assumed to be int array*/
+               MUTEX_UNLOCKBLK(BlkD(dx,List), "x[y]: unlock list");
                return  struct_var(&((struct b_intarray *)(bp))->a[i-1], bp);
                }
 #endif                                  /* Arrays */

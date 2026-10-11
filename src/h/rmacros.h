@@ -42,7 +42,9 @@
 #define Fs_Pipe         020     /* reading or writing on a pipe */
                                 /* see also: BPipe down below */
 
-/*                      040        this bit is now available */
+#ifdef Dbm
+#define Fs_DbmNolock     040     /* DBM open attribute lock=no */
+#endif                                  /* Dbm */
 
 #define Fs_Reading     0100     /* last file operation was read */
 #define Fs_Writing     0200     /* last file operation was write */
@@ -67,6 +69,11 @@
 
 #if HAVE_LIBSSL
   #define Fs_Encrypt   0200000000      /* encrypted sockets */
+  #define Fs_Crypto   01000000000      /* cryptographic context (hash/sign/...) */
+#endif
+
+#if HAVE_LIBSSH
+  #define Fs_SSH       0400000000     /* ssh session/channel */
 #endif
 
 #endif                                  /* PosixFns */
@@ -649,6 +656,46 @@
  */
 #define not_poweroftwo(a) ((a) & (a-1))
 
+/*
+ * C11 atomics.  configure defines HAVE_C11_ATOMICS when the compiler
+ * provides <stdatomic.h>.  With them, a few flags and counters shared
+ * between threads are atomic objects, read and written with the
+ * operations below, and the mutexes that used to guard them compile away
+ * (SERIAL_LOCK).  Without them, these are plain variables, the macros are
+ * plain loads and stores, and the mutexes stay.
+ */
+#if defined(Concurrent) && defined(HAVE_C11_ATOMICS)
+   #define AtomicInt                    atomic_int
+   #define AtomicWord                   atomic_intptr_t
+   #define ATOMIC_LOAD(x)               atomic_load_explicit(&(x), memory_order_relaxed)
+   #define ATOMIC_LOAD_ACQUIRE(x)       atomic_load_explicit(&(x), memory_order_acquire)
+   #define ATOMIC_STORE(x, v)           atomic_store_explicit(&(x), (v), memory_order_relaxed)
+   #define ATOMIC_STORE_RELEASE(x, v)   atomic_store_explicit(&(x), (v), memory_order_release)
+   #define ATOMIC_ADD(x, v)             atomic_fetch_add_explicit(&(x), (v), memory_order_relaxed)
+   #define ATOMIC_LOAD_SC(x)            atomic_load(&(x))
+   #define ATOMIC_STORE_SC(x, v)        atomic_store(&(x), (v))
+   #define ATOMIC_ADD_SC(x, v)          atomic_fetch_add(&(x), (v))
+   #define ATOMIC_FENCE_ACQUIRE()       atomic_thread_fence(memory_order_acquire)
+   #define ATOMIC_FENCE_RELEASE()       atomic_thread_fence(memory_order_release)
+   #define SERIAL_LOCK(mtx)
+   #define SERIAL_UNLOCK(mtx)
+#else                                   /* Concurrent && HAVE_C11_ATOMICS */
+   #define AtomicInt                    int
+   #define AtomicWord                   word
+   #define ATOMIC_LOAD(x)               (x)
+   #define ATOMIC_LOAD_ACQUIRE(x)       (x)
+   #define ATOMIC_STORE(x, v)           ((x) = (v))
+   #define ATOMIC_STORE_RELEASE(x, v)   ((x) = (v))
+   #define ATOMIC_ADD(x, v)             ((x) += (v), (x) - (v))
+   #define ATOMIC_LOAD_SC(x)            (x)
+   #define ATOMIC_STORE_SC(x, v)        ((x) = (v))
+   #define ATOMIC_ADD_SC(x, v)          ((x) += (v), (x) - (v))
+   #define ATOMIC_FENCE_ACQUIRE()
+   #define ATOMIC_FENCE_RELEASE()
+   #define SERIAL_LOCK(mtx)             MUTEX_LOCKID(mtx)
+   #define SERIAL_UNLOCK(mtx)           MUTEX_UNLOCKID(mtx)
+#endif                                  /* Concurrent && HAVE_C11_ATOMICS */
+
 #ifdef Concurrent
 
    #define CE_INBOX_SIZE        1024
@@ -765,12 +812,12 @@
 #ifdef Graphics
 #define Poll() do{ \
   if (!pollctr--) pollctr = pollevent(); \
-  if (thread_call){ \
+  if (ATOMIC_LOAD(thread_call)){ \
     thread_control(TC_ANSWERCALL);}\
 }while (0)
    #else                                /* Graphics */
 #define Poll() do{ \
-  if (thread_call){ \
+  if (ATOMIC_LOAD(thread_call)){ \
   thread_control(TC_ANSWERCALL);\
   }\
   } while (0)
@@ -1379,15 +1426,14 @@
 
    #define MTX_STRINGTOTAL      34
    #define MTX_BLOCKTOTAL       35
-   #define MTX_COLL             36
 
 
    /* This should be the last mutex, becasue it has special initialization*/
-   #define MTX_INITIAL          37
+   #define MTX_INITIAL          36
 
 
    /* total is:  */
-   #define NUM_STATIC_MUTEXES   38
+   #define NUM_STATIC_MUTEXES   37
 
    /* used by wait4GC function*/
 
@@ -1502,12 +1548,29 @@
 #define INC_LOCKID(x, mtx) do {MUTEX_LOCKID(mtx);  x++; MUTEX_UNLOCKID(mtx);} while (0)
 #define DEC_LOCKID(x, mtx) do {MUTEX_LOCKID(mtx);  x--; MUTEX_UNLOCKID(mtx);} while (0)
 
+/*
+ * Counting back in must wait out a collection, so it takes
+ * MTX_THREADCONTROL, which the collector holds throughout.  With atomics,
+ * narthreads_inc_fast() first tries to count in without locking when no
+ * collection has been requested.
+ */
+#ifdef HAVE_C11_ATOMICS
+#define INC_NARTHREADS_CONTROLLED_BASIC                 \
+          if (!narthreads_inc_fast()) {                 \
+          MUTEX_LOCKID_BASIC(MTX_THREADCONTROL);        \
+          MUTEX_LOCKID_BASIC(MTX_NARTHREADS);           \
+          NARthreads++;                                 \
+          MUTEX_UNLOCKID_BASIC(MTX_NARTHREADS);         \
+          MUTEX_UNLOCKID_BASIC(MTX_THREADCONTROL);      \
+          }
+#else                                   /* HAVE_C11_ATOMICS */
 #define INC_NARTHREADS_CONTROLLED_BASIC                 \
           MUTEX_LOCKID_BASIC(MTX_THREADCONTROL);        \
           MUTEX_LOCKID_BASIC(MTX_NARTHREADS);           \
           NARthreads++;                                 \
           MUTEX_UNLOCKID_BASIC(MTX_NARTHREADS);         \
           MUTEX_UNLOCKID_BASIC(MTX_THREADCONTROL);
+#endif                                  /* HAVE_C11_ATOMICS */
 
 #define INC_NARTHREADS_CONTROLLED_ALWAYS                \
       do {                                              \
@@ -1525,10 +1588,28 @@
           NARthreads++;                                 \
       while (0)
 
+/*
+ * Counting out only ever lowers NARthreads, which cannot let a collection
+ * start early, so with atomics it needs no lock.  This is the hot path
+ * around every blocking call.  It also means a CONTROLLED lock taken on
+ * the collector cannot relock MTX_NARTHREADS, which the collector holds.
+ * Counting back in still goes through MTX_THREADCONTROL and
+ * MTX_NARTHREADS, which hold threads off while a collection runs.
+ */
+#ifdef HAVE_C11_ATOMICS
+/*
+ * Sequentially consistent: the collector reads NARthreads (ATOMIC_LOAD_SC)
+ * and then scans this thread's stack and heap, so the thread's earlier
+ * writes must be visible once the decrement is.
+ */
+#define DEC_NARTHREADS_BASIC                            \
+          ATOMIC_ADD_SC(NARthreads, -1);
+#else                                   /* HAVE_C11_ATOMICS */
 #define DEC_NARTHREADS_BASIC                            \
           MUTEX_LOCKID_BASIC(MTX_NARTHREADS);           \
           NARthreads--;                                 \
           MUTEX_UNLOCKID_BASIC(MTX_NARTHREADS);
+#endif                                  /* HAVE_C11_ATOMICS */
 
 #define DEC_NARTHREADS_ALWAYS                           \
       do {                                              \
@@ -1547,13 +1628,19 @@
           NARthreads--;                                 \
       } while (0)
 
+/*
+ * Copy the mutex id before counting out.  The argument is often a
+ * field of a heap block; evaluating it again on the blocking lock
+ * would read that block while a collection may be moving it.
+ */
 #define MUTEX_LOCKID_CONTROLLED_ALWAYS(mtx)             \
       do {                                              \
           int __rv;                                     \
-          MUTEX_TRYLOCKID_BASIC(mtx, __rv);             \
+          word __mtx = (mtx);                           \
+          MUTEX_TRYLOCKID_BASIC(__mtx, __rv);           \
           if (__rv==EBUSY){                             \
             DEC_NARTHREADS_BASIC;                       \
-            MUTEX_LOCKID_BASIC(mtx);                    \
+            MUTEX_LOCKID_BASIC(__mtx);                  \
             INC_NARTHREADS_CONTROLLED_BASIC;            \
           }                                             \
       } while (0)
@@ -1563,20 +1650,6 @@
         if (is_concurrent)                      \
           MUTEX_LOCKID_CONTROLLED_ALWAYS(mtx);  \
       while (0)
-
-#define MUTEX_LOCK_CONTROLLED(mtx, msg)         \
-      do {                                      \
-        if (is_concurrent) {                    \
-          MUTEX_LOCKID_CONTROLLED_ALWAYS(mtx)   \
-          int __rv;                             \
-          MUTEX_TRYLOCK(mtx, __rv, msg);        \
-          if (__rv==EBUSY){                     \
-            DEC_NARTHREADS_BASIC;               \
-            MUTEX_LOCK(mtx, msg);               \
-            INC_NARTHREADS_CONTROLLED_BASIC;    \
-          }                                     \
-        }                                       \
-      } while (0)
 
 /********** block macros *************/
 #define MUTEX_LOCKBLK(bp, msg) \
@@ -1607,12 +1680,6 @@
    MUTEX_TRYLOCKID(bp->mutexid, isbusy)
 
 
-#define C_PUT_PROTECTED(L, v)                                   \
-      do {                                                      \
-        MUTEX_LOCKBLK(BlkD(L, List));                           \
-        c_put(&L, &v); MUTEX_UNLOCKBLK(BlkD(L, List));          \
-      } while (0)
-
 #define MUTEX_INITBLK(bp)                       \
       do {                                      \
         if (!bp->shared){                       \
@@ -1631,9 +1698,6 @@
 
 #define MUTEX_GETBLK(bp) mutexes[bp->mutexid]
 
-#define CV_GETULLTBLK(bp) condvars[bp->cvfull]
-#define CV_GETULLTBLK(bp) condvars[bp->cvfull]
-
 #define CV_INITBLK(bp)                          \
       do {                                      \
         MUTEX_INITBLK(bp);                      \
@@ -1650,7 +1714,7 @@
 #define CV_WAIT(cv, mtxid)                                              \
       do {                                                              \
         int __rv;                                                       \
-        if ((__rv=pthread_cond_wait(cv, MUTEXID(mtxid)))<0 ){           \
+        if ((__rv=pthread_cond_wait(cv, MUTEXID(mtxid))) != 0){         \
           fprintf(stderr, "condition variable wait failure %d\n", __rv); \
           exit(-1);                                                     \
         }                                                               \
@@ -1659,16 +1723,30 @@
 #define CV_INIT(cv, msg)                                                \
       do{                                                               \
         int __rv;                                                       \
-        if ((__rv=pthread_cond_init(cv, NULL))<0 ){                     \
+        if ((__rv=pthread_cond_init(cv, NULL)) != 0){                   \
           handle_thread_error(__rv, FUNC_COND_INIT, msg);               \
         }                                                               \
       } while (0)
 
+/*
+ * Wait on a queue's "full" or "empty" condition variable, holding the
+ * list's mutex, with the thread counted out while it waits.  The condition
+ * variable and mutex are looked up first, while still counted in: once the
+ * thread is counted out, a collection may move the list block.
+ */
+#define CV_WAIT_COUNTED_OUT(cvp, mtxp) do {   \
+      pthread_cond_t *cv__ = (cvp);           \
+      pthread_mutex_t *mtx__ = (mtxp);        \
+      DEC_NARTHREADS;                         \
+      pthread_cond_wait(cv__, mtx__);         \
+      INC_NARTHREADS_CONTROLLED;              \
+   } while (0)
+
 #define CV_WAIT_FULLBLK(bp) \
-    pthread_cond_wait(condvars[bp->cvfull], MUTEX_GETBLK(bp));
+    CV_WAIT_COUNTED_OUT(condvars[(bp)->cvfull], MUTEX_GETBLK(bp))
 
 #define CV_WAIT_EMPTYBLK(bp) \
-    pthread_cond_wait(condvars[bp->cvempty], MUTEX_GETBLK(bp));
+    CV_WAIT_COUNTED_OUT(condvars[(bp)->cvempty], MUTEX_GETBLK(bp))
 
 #define CV_SIGNAL_FULLBLK(bp) if (bp->full) { \
     pthread_cond_signal(condvars[bp->cvfull]);}
@@ -1676,8 +1754,13 @@
 #define CV_SIGNAL_EMPTYBLK(bp) if (bp->empty) { \
     pthread_cond_signal(condvars[bp->cvempty]);}
 
-#define CV_TIMEDWAIT_EMPTYBLK(bp, t)\
-  pthread_cond_timedwait(condvars[bp->cvempty], MUTEX_GETBLK(bp), &t);
+#define CV_TIMEDWAIT_EMPTYBLK(bp, t) do {               \
+      pthread_cond_t *cv__ = condvars[(bp)->cvempty];   \
+      pthread_mutex_t *mtx__ = MUTEX_GETBLK(bp);        \
+      DEC_NARTHREADS;                                   \
+      pthread_cond_timedwait(cv__, mtx__, &(t));        \
+      INC_NARTHREADS_CONTROLLED;                        \
+   } while (0)
 
 #define SUSPEND_THREADS() thread_control(TC_STOPALLTHREADS)
 #define RESUME_THREADS() thread_control(TC_WAKEUPCALL)
@@ -1704,14 +1787,13 @@
 #define MUTEX_LOCKID_ALWAYS(mtx)
 #define MUTEX_UNLOCKID_ALWAYS(mtx)
 
-#define MUTEX_LOCK_CONTROLLED(mtx, msg)
 #define MUTEX_LOCKID_CONTROLLED(mtx)
 #define INC_LOCKID(x, mtx)
 #define DEC_LOCKID(x, mtx)
 #define INC_NARTHREADS_CONTROLLED
 #define DEC_NARTHREADS
 #define INC_NARTHREADS_CONTROLLED_ALWAYS
-#define DEC_NARTHREADS_CONTROLLED_ALWAYS
+#define DEC_NARTHREADS_ALWAYS
 
 #define MUTEX_INITBLK(bp)
 #define MUTEX_INITBLKID(bp, mtx)
@@ -1721,11 +1803,8 @@
 #define MUTEX_LOCKBLK_CONTROLLED_NOCHK(bp, msg)
 #define MUTEX_UNLOCKBLK(bp, msg)
 #define MUTEX_TRYLOCKBLK(bp, isbusy, msg)
-#define C_PUT_PROTECTED(L, v)
 #define CV_INITBLK(bp)
 #define MUTEX_GETBLK(bp)
-#define CV_GETULLTBLK(bp)
-#define CV_GETULLTBLK(bp)
 
 #define CV_WAIT_FULLBLK(bp)
 #define CV_WAIT(cv, mtxid)

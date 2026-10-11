@@ -2,14 +2,16 @@ TOPDIR=../..
 
 default: all
 
-include $(TOPDIR)/Makedefs
+UNICON_TOP_BUILDDIR ?= $(TOPDIR)
+include $(UNICON_TOP_BUILDDIR)/Makedefs
 
-HDRS= ../h/auto.h ../h/define.h ../h/config.h ../h/cstructs.h ../h/mproto.h \
+HDRS= $(AUTO_H) ../h/define.h ../h/config.h ../h/cstructs.h ../h/mproto.h \
 	  ../h/typedefs.h ../h/proto.h ../h/cpuconf.h
 
 OBJS=   long.$(O) getopt.$(O) time.$(O) filepart.$(O) identify.$(O) strtbl.$(O) rtdb.$(O)\
 	mlocal.$(O) literals.$(O) rswitch.$(O) alloc.$(O) \
-	save.$(O) redirerr.$(O) xwindow.$(O) dlrgint.$(O) ipp.$(O) drawstring3d.$(O)
+	save.$(O) redirerr.$(O) xwindow.$(O) dlrgint.$(O) ipp.$(O) drawstring3d.$(O) \
+	ssl_dtls.$(O)
 
 PROGS= libucommon.a doincl$(EXE) patchstr$(EXE) libuconsole.a $(LIBWUCONSOLE)
 
@@ -29,18 +31,19 @@ patchstr$(EXE): patchstr.$(O)
 		$(CP) patchstr$(EXE) ../../bin/
 		$(STRIP) ../../bin/patchstr$(EXE)
 
-# iconx needs NTConsole to be defined/set,
-# make this a dependency for iconx to set it
-NTCON:
-	$(RM) uconsole.$(O)
-	@echo set NTCONSOLE=-DNTConsole -DMSWindows
-	$(eval NTCONSOLE=-DNTConsole -DMSWindows)
+# Console and GUI uconsole objects use different -D flags and distinct .o names,
+# so they can build in parallel under make -j (no shared NTCONSOLE eval).
+uconsole.$(O): uconsole.c $(HDRS)
+	$(CMNT)@echo "   [COMMON] $<"
+ifneq ($(NTCONDEP),)
+	$(SLNT)$(CC) -DNTConsole -DMSWindows $(CPPFLAGS) $(CFLAGS) -c $<
+else
+	$(SLNT)$(CC) $(CPPFLAGS) $(CFLAGS) -c $<
+endif
 
-# set NTConsole for wiconx
-WNTCON:
-	$(RM) uconsole.$(O)
-	@echo set NTCONSOLE=-DMSWindows
-	$(eval NTCONSOLE=-DMSWindows )
+wuconsole.$(O): uconsole.c $(HDRS)
+	$(CMNT)@echo "   [COMMON] $<"
+	$(SLNT)$(CC) -DMSWindows $(CPPFLAGS) $(CFLAGS) -c -o wuconsole.o $<
 
 libucommon.a: $(OBJS) $(HDRS)
 	$(RM) $@
@@ -48,13 +51,13 @@ libucommon.a: $(OBJS) $(HDRS)
 	$(RANLIB) $@
 	$(CP) $@ ../../rt/lib/
 
-libuconsole.a: $(NTCONDEP) uconsole.$(O)
+libuconsole.a: uconsole.$(O)
 	$(RM) $@
 	$(AR) q $@ uconsole.$(O)
 	$(RANLIB) $@
 	$(CP) $@ ../../rt/lib/
 
-libwuconsole.a: WNTCON wuconsole.$(O)
+libwuconsole.a: wuconsole.$(O)
 	$(RM) $@
 	$(AR) q $@ wuconsole.$(O)
 	$(RANLIB) $@
@@ -71,11 +74,7 @@ dconsole.$(O): dconsole.c
 
 %.$(O): %.c
 	$(CMNT)@echo "   [COMMON] $<"
-	$(SLNT)$(CC) $(NTCONSOLE) $(CPPFLAGS) $(CFLAGS) -c $<
-
-wuconsole.$(O): uconsole.c
-	$(CMNT)@echo "   [COMMON] $<"
-	$(SLNT)$(CC) $(NTCONSOLE) $(CPPFLAGS) $(CFLAGS) -c -o wuconsole.o uconsole.c
+	$(SLNT)$(CC) $(CPPFLAGS) $(CFLAGS) -c $<
 
 identify.$(O): ../h/version.h
 
@@ -85,7 +84,7 @@ literals.$(O): ../h/esctab.h
 
 rtdb.$(O): ../h/version.h icontype.h
 
-#FIX: we are using $(O) everywhere but the string below is hradcoded to .o
+#FIX: we are using $(O) everywhere but the string below is hardcoded to .o
 drawstring3d.$(O): drawstring3d.cc
 	@if test "`which $(CXX)`" != "" ; then \
 		echo "Got C++, building drawstring3d.o"; \
@@ -97,13 +96,13 @@ drawstring3d.$(O): drawstring3d.cc
 		rm drawstring3d.c ; \
 	fi
 
-dlrgint.$(O): ../h/auto.h ../h/rproto.h ../h/rexterns.h ../h/rmacros.h ../h/rstructs.h
+dlrgint.$(O): $(AUTO_H) ../h/rproto.h ../h/rexterns.h ../h/rmacros.h ../h/rstructs.h
 
-xwindow.$(O): ../h/auto.h ../h/graphics.h ../h/xwin.h
+xwindow.$(O): $(AUTO_H) ../h/graphics.h ../h/xwin.h
 
-rswitch.$(O): FORCE
-	$(SLNT) $(CC) $(CPPFLAGS) $(CFLAGS) -Wno-unused-command-line-argument -c rswitch.[cs]
-FORCE:
+rswitch.$(O): $(RSWITCH_SRC)
+	$(CMNT)@echo "   [COMMON] rswitch ($<)"
+	$(SLNT)$(CC) $(CPPFLAGS) $(CFLAGS) -Wno-unused-command-line-argument -c -o $@ $<
 
 distclean clean:
 	$(RM) $(PROGS) *.o core junk*

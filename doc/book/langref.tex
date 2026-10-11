@@ -973,8 +973,11 @@ co-expression to evaluate \textit{expr}.
 execution of \textit{expr} on value {\textit x}. Value {\textit x} must
 be a mutex or protected object that has a mutex. The critical section
 causes {\textit x} to be locked before evaluating {\textit expr} and
-unlocked afterward. Breaking, returning or failing out of {\textit expr} 
-does not automatically unlock {\textit x}.\WarningNotThreadSafe
+unlocked afterward, however {\textit expr} is left: by producing a result,
+by failing, or by \texttt{break}, \texttt{next}, \texttt{return},
+\texttt{fail} or \texttt{suspend}. If {\textit expr} is a generator and is
+resumed, {\textit x} is locked again first, so each result is produced
+under the lock. The critical expression produces the value of {\textit expr}.
 
 \bigskip\hrule\vspace{0.1cm}
 \noindent
@@ -1061,10 +1064,11 @@ with the package name.
 \noindent
 \index{initial}The \texttt{initial} expression is executed the first
 time a procedure or method is invoked.
-Any subsequent invocations (of the procedure or method) \ConcurrencyIssue
+Invocations by other threads \ConcurrencyIssue
 will not proceed until the \texttt{initial} expression has finished execution.
 A recursive invocation of the procedure inside the \texttt{initial} expression
-causes a runtime error.
+skips it, as in Icon. Leaving the \texttt{initial} expression by \texttt{return},
+\texttt{fail} or \texttt{suspend} also counts as finishing it.
 
 \bigskip\hrule\vspace{0.1cm}
 \noindent
@@ -1306,7 +1310,8 @@ consisting of one-letter substrings. Set and table elements are
 generated in an undefined order. If \texttt{x} is a messaging
 connection to a POP server, \texttt{!x} produces complete messages as
 strings. Other types of files, including network connections, produce
-elements consisting of text lines.
+elements consisting of text lines. Cryptographic handles and SSH
+sessions with no channel are not line streams; \texttt{!x} fails.
 Care should be taken \WarningNotThreadSafe\ when generating the elements
 of a variable that might change during the generation.
 
@@ -1607,7 +1612,8 @@ if no left operand is supplied. Activation may be augmented.
 The send operator places a message in another thread's public
 inbox, or in the current thread's public outbox. The normal version fails
 if the box is full; the blocking version waits for space to become
-available.
+available, unless the receiving thread has terminated, in which case it
+does not wait.
 
 \bigskip\hrule\vspace{0.1cm}
 \noindent
@@ -1620,7 +1626,8 @@ available.
 The receive operator obtains a message from another thread's public
 outbox, or the current thread's public inbox. The normal version fails
 if the box is empty; the blocking version waits for a message to become
-available.
+available. Once the sending thread has terminated, a blocking receive
+from it fails when its outbox is empty.
 
 \bigskip\hrule\vspace{0.1cm}
 \noindent
@@ -1765,6 +1772,22 @@ arbitrary keys, and records may be subscripted by either string
 fieldname or 1-based integer index. Message connections may be
 subscripted by string header to obtain server responses; POP
 connections may also be subscripted by 1-based integer message numbers.
+Cryptographic handles, SSH files, TLS sockets, and network sockets may
+be subscripted by a status field name for a non-destructive peek
+(\texttt{h["type"]}, \texttt{c["exitstatus"]}, \texttt{f["ttl"]},
+\texttt{conn["cipher"]}); an unknown name is a runtime error
+(1302 crypto, 1326 TLS, 1331 SSH, 1310 sockets) and an
+unpopulated field fails. Boolean peeks succeed with \texttt{"yes"} or
+\texttt{\&null}. \texttt{f["*"]} is a table snapshot of the answerable
+fields. Peeking a closed handle is error 174.
+\texttt{key(f)} that has not yet produced a name also raises 174 if the
+handle is already closed; after the first suspend, \texttt{close()}
+makes the generator fail instead of raising.
+\texttt{f["groups"]}, \texttt{s["authmethods"]}, \texttt{h["san"]}, and
+\texttt{conn["certchain"]} produce a list (a single item is still a
+list of length 1); other peeks are a string, integer, or \texttt{\&null}.
+\texttt{key(f)} generates the answerable field names, matching
+\texttt{key()} on a messaging connection.
 
 Subsectioning works on strings and lists. For strings, the subsection is
 a variable if the string was a variable, and
@@ -1900,6 +1923,35 @@ The argument is given in radians.
 \noindent
 \index{inverse hyperbolic tangent}\texttt{atanh(r)} produces the inverse
 hyperbolic tangent of \texttt{r}. Arguments are given in radians.
+
+\bigskip
+\hrule\vspace{0.1cm}
+\index{Attrib}
+\noindent
+{\bf Attrib(x, ...) : x* } \hfill {\bf set attributes}
+
+\noindent
+\texttt{Attrib()} sets attributes of its first argument.
+For a network socket file, trailing \texttt{"\textit{name}=\textit{value}"}
+strings set options (including \texttt{join}/\texttt{leave} for multicast
+memberships), using the same names as \texttt{open()} socket attributes
+and \texttt{WAttrib()}. Status is peeked with \texttt{f["\textit{name}"]},
+not with a bare name to \texttt{Attrib()}.
+Boolean values are \texttt{yes}/\texttt{no}; numeric values are
+integers. Socket attributes do not require the Concurrent build
+feature.
+SSH status (\texttt{exitstatus}, \texttt{stderr}, \texttt{eof}, and
+session fields such as \texttt{fingerprint}) is peeked with
+\texttt{c["\textit{name}"]}; \texttt{Attrib()} has no SSH setters.
+For a cryptographic handle, assignments such as \texttt{op=}, \texttt{alg=},
+\texttt{cipher=}, \texttt{iv=}, and \texttt{sig=} are allowed only in
+the idle window between operations. Status including \texttt{type}
+(material role), \texttt{op} (operation), certificate identity, and a
+non-destructive hash \texttt{hash} peek uses \texttt{h["\textit{name}"]}.
+For a co-expression or list, integer attribute codes from
+\texttt{threadh.icn} query thread inbox/outbox sizes and query or set
+their limits and channel limits (see Chapter~8; requires Concurrent).
+Sizes are read-only; several limits may be set in one call.
 
 \bigskip
 \hrule\vspace{0.1cm}
@@ -2587,6 +2639,11 @@ table \texttt{T}. \texttt{key(L)} generates the indices from 1 to
 \texttt{*L} in list \texttt{L}. \texttt{key(R)} generates the string
 field names of record \texttt{R}.
 \texttt{key(D)} generates the string key values of a DBM database \texttt{D}.
+\texttt{key(M)} generates header names on a messaging connection
+\texttt{M} (including \texttt{Status-Code} and \texttt{Reason-Phrase}).
+\texttt{key(f)} generates answerable status-field names on a cryptographic
+handle, SSH file, TLS socket, or network socket; \texttt{f[k]} peeks
+the corresponding value.
 
 \bigskip\hrule\vspace{0.1cm}
 \index{keyword}
@@ -2672,7 +2729,8 @@ generates names in the currently active procedure in \texttt{ce}.
 associated with thread-safe object \texttt{x}.
 Mutexes are recursive (i.e. they may be locked again by the same co-expression
 or thread without blocking) but must be unlocked as many times as they are
-locked. It is an error to unlock a mutex more times than it has been locked.
+locked. It is an error to unlock a mutex more times than it has been locked
+(run-time error 186).
 
 \bigskip\hrule\vspace{0.1cm}
 \index{log}
@@ -2866,8 +2924,17 @@ connection from a UDP network socket\\
 TCP network socket \\
  \ \ \ \ \texttt{"nu"\ \ \ \ }connect to a
 UDP network socket\\
+ \ \ \ \ \texttt{"nr"\ \ \ \ }open a raw
+IP socket (\texttt{SOCK\_RAW}; requires \texttt{proto=})\\
  \ \ \ \ \texttt{"e"\ \ \ \ } use SSL/TLS protocol to
-encrypt the network socket\\
+encrypt the network socket; alone or as
+\texttt{"er"}/\texttt{"eh"}, also open cryptographic
+handles (hash/HMAC/sign/encrypt; see Chapter~6).
+With a file read/write mode, \texttt{"re"}~/~\texttt{"we"} open a
+file-transform crypto handle. With UDP
+(\texttt{"nue"}~/~\texttt{"naue"}), encrypt means DTLS.\\
+ \ \ \ \ \texttt{"h"\ \ \ \ } open an SSH client
+session (requires \texttt{libssh}; see Chapter~6)\\
  \ \ \ \ \texttt{"m"\ \ \ \ }connect to a
 messaging server (HTTP, HTTPS, SMTP, POP, ...)\\
  \ \ \ \ \texttt{"o"\ \ \ \ }open an
@@ -2898,17 +2965,51 @@ domain socket. If the host name is null, it represents the current
 host. Mode \texttt{"n"} allows an optional third parameter,
 an integer timeout (in milliseconds) after which \texttt{open()} fails
 if no connection has been established by that time.
+Trailing arguments may also be \texttt{"\textit{name}=\textit{value}"}
+socket attributes (\texttt{join}, \texttt{leave}, \texttt{source},
+\texttt{iface}, \texttt{ttl}, \texttt{mcastloop},
+\texttt{reuseaddr}, \texttt{reuseport}, \texttt{broadcast},
+\texttt{rcvbuf}, \texttt{sndbuf}, \texttt{proto}, \texttt{hdrincl});
+boolean values are \texttt{yes} or \texttt{no}. \texttt{iface}
+accepts an IPv4 address, a numeric interface index, or (on UNIX) an
+interface name; when omitted, a multicast join covers every UP IPv4
+interface and a multicast send uses the first non-loopback IPv4
+address (else loopback). \texttt{ttl} sets unicast and multicast hop
+limits; \texttt{mcastloop} controls delivery of the host's own
+multicasts (default on); \texttt{rcvbuf}/\texttt{sndbuf} take a byte
+size. Listeners default to \texttt{reuseaddr=yes}; multicast binds
+also get \texttt{reuseport=yes} where available. Binding a UDP socket
+to a multicast group joins that group; \texttt{source@group:port} or
+\texttt{source=} performs a source-specific join instead (IPv4 and
+IPv6; for IPv6 SSM prefer an explicit \texttt{iface=}). Sending to
+\texttt{255.255.255.255} enables broadcast.
+Mode \texttt{"nr"} opens a raw IP socket and requires
+\texttt{proto=\textit{name{\textbar}n}} (for example \texttt{icmp},
+\texttt{igmp}, or 0--255); the host argument is a bare address with
+no port. Optional \texttt{hdrincl=yes} sets \texttt{IP\_HDRINCL}.
+Packet bytes are built by the application (see package \texttt{net}
+/ \texttt{PacketSpec} in Chapter~5). The same attributes can be
+changed after \texttt{open()} with \texttt{Attrib()} (except
+\texttt{proto}, which is fixed at \texttt{socket()} time); status is
+peeked with \texttt{f["\textit{name}"]} (see
+Chapter~5 for examples).
 
 For a UDP socket, there is not really a connection, but any writes to
 that file will send a datagram to that address, so that the address
 doesn't have to be specified each time. Also,
-\texttt{read()} or \texttt{reads()} cannot be performed on a UDP
-socket; use receive. UDP sockets must be in the INET domain; the
+\texttt{read()} or \texttt{reads()} cannot be performed on a plain UDP
+socket; use receive. Encrypted UDP (DTLS, modes \texttt{"nue"}~/~\texttt{"naue"})
+uses \texttt{write}/\texttt{read} through the SSL layer like TLS.
+UDP sockets must be in the INET domain; the
 address must have a colon. 
 
-For a DBM database, only one modifier character may be used: if
-\texttt{s1} is \texttt{"dr"} it indicates that the database should be
-opened in read-only mode.  For an ODBC database, following the mode
+For a DBM database, \texttt{"d"} opens for reading and writing and
+\texttt{"dr"} opens read-only. The database file is locked. As for a
+socket, the optional integer third argument is a timeout in
+milliseconds: 0, or omitting it, waits until the lock is free, and a
+positive value makes \texttt{open()} fail if the lock is still busy
+then. \texttt{lock=no} opens without a lock; \texttt{lock=yes} is the
+default.  For an ODBC database, following the mode
 letter \texttt{"o"} comes an optional string default table name used
 by functions such as \texttt{dbcolumns()}, followed by two generally
 required strings giving the username and password authentication for the
@@ -2927,6 +3028,37 @@ For 2D and 3D windows, attribute values may be specified in the
 following arguments to \texttt{open()}. \texttt{open()} fails if a
 window cannot be opened or an attribute cannot be set to a requested
 value.
+
+When opening an SSH session (mode \texttt{"h"}), the first argument is a
+host or \texttt{user@host}, optionally with \texttt{:port} (same form as
+socket addresses; IPv6 uses \texttt{[addr]:port}). Trailing attributes
+include \texttt{user=}, \texttt{key=}, \texttt{keypass=},
+\texttt{password=}, \texttt{hostkeyfile=}, \texttt{cmd=} (requires mode
+\texttt{"hc"}),
+\texttt{term=}/\texttt{cols=}/\texttt{rows=} (interactive PTY), and
+\texttt{channel=} (\texttt{yes}/\texttt{no}; \texttt{channel=no} is a
+transport-only session), and \texttt{verifyPeer=} (\texttt{yes}/\texttt{no}).
+Mode \texttt{"h-"} or \texttt{verifyPeer=no} skips host-key verification.
+\texttt{open(s, "hc", ...)} on an existing SSH file opens another channel on
+the same session; \texttt{open(s, "hs", "path=\textit{path}", ...)}
+opens a remote file or directory over SFTP. See Chapter~6.
+
+When opening a cryptographic handle (modes \texttt{"e"}, \texttt{"er"},
+or \texttt{"eh"}, without a network \texttt{"n"}), the first argument is
+a digest name (\texttt{"eh"}), a key/certificate path, a raw key string
+(\texttt{"er"}), or another crypto handle that supplies material.
+Trailing attributes include \texttt{op=} (\texttt{hash}, \texttt{hmac},
+\texttt{sign}, \texttt{verify}, \texttt{encrypt}, \texttt{decrypt}),
+\texttt{alg=}, \texttt{cipher=}, \texttt{iv=}, \texttt{sig=}, and
+\texttt{keypass=} (key-file passphrase; \texttt{password=} is an alias).
+Defaults are \texttt{sha256} and \texttt{aes-256-gcm}.
+Modes \texttt{"re"} and \texttt{"we"} take a data-file path as the
+target and obtain key material from \texttt{key=} or a handle attribute.
+Encrypted sockets (\texttt{"ne"}, \texttt{"nue"}, \ldots) also accept
+crypto material handles as attributes so identity can be reused across
+connections. Mode \texttt{"ne-"} or \texttt{verifyPeer=no} skips peer
+certificate verification; \texttt{keypass=} unlocks an encrypted
+private key. See Chapter~6.
 
 \bigskip\hrule\vspace{0.1cm}
 \index{opmask}
@@ -3113,9 +3245,19 @@ or fails if the conversion cannot be performed.
 \noindent
 \index{receive datagram}\texttt{receive(f)} reads a datagram addressed
 to the port associated with \texttt{f}, waiting if necessary. The
-returned value is a record of type \texttt{posix\_message(addr, msg)},
-containing the address of the sender and the contents of the message
-respectively. 
+returned value is a record of type
+\texttt{posix\_message(addr, msg, saddr, daddr, ttl, proto)},
+containing the sender address (\texttt{host:port}), the message
+bytes, and IP-style \texttt{saddr}/\texttt{daddr}.
+On UDP, \texttt{saddr} is the numeric peer and \texttt{daddr} is
+null. On an IPv4 raw datagram that includes a header,
+\texttt{saddr}, \texttt{daddr}, \texttt{ttl}, and \texttt{proto}
+come from that header.
+For an SSH channel file, \texttt{receive(c)} instead
+yields the next channel event in arrival order: \texttt{addr} is
+\texttt{"stdout"}, \texttt{"stderr"}, or \texttt{"exit"}, and
+\texttt{msg} holds the data (the exit status as a string for
+\texttt{"exit"}).
 
 \bigskip\hrule\vspace{0.1cm}
 \index{remove}
@@ -3124,7 +3266,8 @@ respectively.
 
 \noindent
 \index{remove file}\index{file!remove}\texttt{remove(s)} removes the
-file named \texttt{s}.
+file named \texttt{s}. \texttt{remove(s, path)} removes a remote path
+over SFTP when \texttt{s} is an SSH session file.
 
 \bigskip\hrule\vspace{0.1cm}
 \index{rename}
@@ -3133,7 +3276,8 @@ file named \texttt{s}.
 
 \noindent
 \index{file!rename}\texttt{rename(s1,s2)} renames the file named
-\texttt{s1} to have the name \texttt{s2}.
+\texttt{s1} to have the name \texttt{s2}. \texttt{rename(s, from, to)}
+renames a remote path over SFTP when \texttt{s} is an SSH session file.
 
 \bigskip\hrule\vspace{0.1cm}
 \index{repl}
@@ -3385,7 +3529,10 @@ integers that may be formatted with the \texttt{ctime()} and
 listing option of the UNIX \texttt{ls(1)} command. For example,
 \texttt{"-rwxrwsr-x"} represents a plain
 file with a mode of 2775 (octal). \texttt{stat(f)} fails if filename or
-path \texttt{f} does not exist.
+path \texttt{f} does not exist. \texttt{stat(c)} on an open SFTP file
+uses the remote file handle; \texttt{stat(s, path)} stats a remote path
+on SSH session \texttt{s} without opening it. Fields the SFTP server
+did not send are null rather than zero.
 
 \bigskip\hrule\vspace{0.1cm}
 \index{staticnames}
@@ -3542,7 +3689,8 @@ of \texttt{x}.
 
 \noindent
 \index{lock}\texttt{unlock(x)} unlocks the mutex \texttt{x} or the mutex
-associated with thread-safe object \texttt{x}.
+associated with thread-safe object \texttt{x}. Unlocking a mutex that the
+current thread does not hold is run-time error 186.
 
 \bigskip\hrule\vspace{0.1cm}
 \index{upto}
@@ -3587,9 +3735,14 @@ program that created \texttt{c}.
 
 \noindent
 \index{wait()}\texttt{wait(x)} waits for \texttt{x}. If \texttt{x} is
-a thread, \texttt{wait()} waits for it to finish. If \texttt{x} is
-is a condition variable \texttt{wait()} waits until that variable is
-subsequently signaled by another thread.
+a thread, \texttt{wait()} waits for it to finish. A thread is waited for
+once: \texttt{wait()} fails if the thread never ran or has already been
+waited for, also by a concurrent \texttt{wait()}. If \texttt{x} is
+a condition variable \texttt{wait()} waits until that variable is
+subsequently signaled by another thread. The condition variable's mutex
+must be locked by the calling thread (run-time error 186 otherwise), and
+locked only once: waiting releases one level of a recursive lock, so a
+mutex locked twice stays held and the signaling thread can never acquire it.
 
 \bigskip\hrule\vspace{0.1cm}
 \noindent
@@ -4912,13 +5065,14 @@ unevaluated expression\\
 175 \ \ \ \ \ \ \ network connection expected\\
 180 \ \ \ \ \ \ \ invalid mutex\\
 181 \ \ \ \ \ \ \ invalid condition variable\\
-182 \ \ \ \ \ \ \ illegal recursion in initial clause\\
+182 \ \ \ \ \ \ \ illegal recursion in initial clause (no longer produced)\\
 183 \ \ \ \ \ \ \ concurrent threads are not enabled in
 this virtual machine\\
 184 \ \ \ \ \ \ \ structure cannot have more than one mutex at 
 the same time\\
 185 \ \ \ \ \ \ \ converting an active co-expression to a thread
 is not yet supported\\
+186 \ \ \ \ \ \ \ mutex is not locked by the current thread\\
 %%----------------------------------------
 190 \ \ \ \ \ \ \ dbm database expected\\
 191 \ \ \ \ \ \ \ cannot open dbm database\\
@@ -4996,6 +5150,27 @@ length\\
 1306 \ \ \ \ \ \ \ cipher error\\
 1307 \ \ \ \ \ \ \ private key and certificate mismatch\\
 1308 \ \ \ \ \ \ \ unknown protocol\\
+1310 \ \ \ \ \ \ \ bad socket attribute\\
+1311 \ \ \ \ \ \ \ unknown cryptographic algorithm or cipher\\
+1312 \ \ \ \ \ \ \ cryptographic handle lacks required material\\
+1313 \ \ \ \ \ \ \ duplicate cryptographic material role\\
+1314 \ \ \ \ \ \ \ AEAD authentication failed\\
+1315 \ \ \ \ \ \ \ signature verification failed\\
+1316 \ \ \ \ \ \ \ invalid cryptographic operation state\\
+1317 \ \ \ \ \ \ \ cryptographic material could not be loaded\\
+1320 \ \ \ \ \ \ \ TLS certificate expired\\
+1321 \ \ \ \ \ \ \ TLS untrusted CA\\
+1322 \ \ \ \ \ \ \ TLS hostname mismatch\\
+1323 \ \ \ \ \ \ \ TLS no shared cipher\\
+1324 \ \ \ \ \ \ \ TLS protocol version mismatch\\
+1325 \ \ \ \ \ \ \ TLS handshake failed\\
+1326 \ \ \ \ \ \ \ bad TLS status field\\
+1330 \ \ \ \ \ \ \ SSH error\\
+1331 \ \ \ \ \ \ \ bad ssh attribute\\
+1332 \ \ \ \ \ \ \ SSH authentication error\\
+1333 \ \ \ \ \ \ \ SSH host key verification error\\
+1334 \ \ \ \ \ \ \ SSH channel error\\
+1335 \ \ \ \ \ \ \ SFTP error\\
 
 \subsection*{System errors}
 

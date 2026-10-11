@@ -69,11 +69,15 @@ int fpoll(int argc, descriptor *argv)	/*: await data from file */
 #elif __linux
    if (f->_IO_read_ptr < f->_IO_read_end)
       RetArg(1);
-#elif __bsdi__ || __FreeBSD__ || __NetBSD__ || __OpenBSD__ || __APPLE__
+#elif __bsdi__ || __FreeBSD__ || __NetBSD__ || __APPLE__
    if (f->_r > 0)
       RetArg(1);
 #elif __sun
    /* insert your implementation here */
+#elif __OpenBSD__
+#include <stdio_ext.h>
+   if (__freadahead(f) > 0)
+      RetArg(1);
 #else
    if (f->_cnt > 0)
       RetArg(1);

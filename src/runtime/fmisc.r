@@ -2536,13 +2536,13 @@ end
 
 
 #define GETCVMUTEXID(x,y){ \
-   if (x>-2 || -x-1>ncondvars) irunerr(180, x); \
+   if (x>-2 || -x-1>ncondvars) { irunerr(180, x); errorfail; } \
    y = condvarsmtxs[-x-2];}
 
 #define GETMUTEXID(x,y) { \
    if (x<0) GETCVMUTEXID(x,y) \
    else y = x-1; \
-   if (y<NUM_STATIC_MUTEXES || y>=nmutexes) irunerr(180, x);}
+   if (y<NUM_STATIC_MUTEXES || y>=nmutexes) { irunerr(180, x); errorfail; }}
 
 
 word get_mutex( pthread_mutexattr_t *mattr){
@@ -2579,8 +2579,10 @@ word get_cv(word mtx){
       RESUME_THREADS();
       }
 
-   condvars[ncondvars] = malloc(sizeof(pthread_cond_t)); \
-   pthread_cond_init(condvars[ncondvars], NULL);
+   condvars[ncondvars] = malloc(sizeof(pthread_cond_t));
+   if (condvars[ncondvars] == NULL)
+      syserr("get_cv(): out of memory for condition variables!");
+   CV_INIT(condvars[ncondvars], "get_cv()");
    if(mtx<0)
       condvarsmtxs[ncondvars]=get_mutex(&rmtx_attr);
    else
@@ -2628,7 +2630,12 @@ function{0,1} signal(x, y)
           * Transmit whatever is needed to wake it up.
           */
 #ifdef PthreadCoswitch
-         if (BlkD(x, Coexpr)->alive == 0)
+         /*
+          * Only a running thread can be woken.  A finished thread keeps
+          * its semaphore until it is collected, and x holds it, so a
+          * thread that exits after this test is posted to harmlessly.
+          */
+         if (BlkD(x, Coexpr)->alive <= 0 || BlkD(x, Coexpr)->semp == NULL)
             fail;
 
          sem_post(BlkD(x, Coexpr)->semp);
@@ -2650,8 +2657,10 @@ function{0,1} signal(x, y)
    body {
       int rv;
       word i, x1 = -x-2;
-       if (x1<0 || x1>=ncondvars)
+       if (x1<0 || x1>=ncondvars) {
          irunerr(181, x);
+         errorfail;
+         }
       if (Y == 0) {
          if ((rv=pthread_cond_broadcast(condvars[x1])) != 0) {
             }
@@ -2781,6 +2790,12 @@ function{1} lock(x)
          }
       file:{
          inline {
+            /*
+             * File mutexes exist before any thread does.  Lock for real
+             * even then: otherwise this is a no-op, and an unlock() after
+             * the first thread starts would release a mutex never taken.
+             */
+            TURN_ON_CONCURRENT();
             MUTEX_LOCKID_CONTROLLED(BlkD(x, File)->mutexid);
             return x;
             }
@@ -2823,6 +2838,7 @@ function{0,1} trylock(x)
       file:{
          inline {
             int rv;
+            TURN_ON_CONCURRENT();       /* see lock() */
             MUTEX_TRYLOCKID(BlkD(x, File)->mutexid, rv);
             if (rv == 0) return x;
             fail;
@@ -2833,6 +2849,30 @@ function{0,1} trylock(x)
      }
 end
 
+/*
+ * Unlock mutex id mtx for unlock().  Returns 0 or the pthread error, so
+ * that releasing a mutex this thread does not hold (EPERM) can be a
+ * run-time error rather than a system error.
+ */
+static int unlock_mutexid(word mtx)
+{
+   if (!is_concurrent)
+      return 0;
+   return pthread_mutex_unlock(MUTEXID(mtx));
+}
+
+#begdef UnlockOrFail(mtx, errexpr)
+   {
+   int rv = unlock_mutexid(mtx);
+   if (rv == EPERM) {
+      errexpr;
+      errorfail;
+      }
+   else if (rv != 0)
+      handle_thread_error(rv, FUNC_MUTEX_UNLOCK, "unlock()");
+   }
+#enddef
+
 "unlock(x) - unlock mutex x"
 
 function{1} unlock(x)
@@ -2842,7 +2882,7 @@ function{1} unlock(x)
       word x1;
       GETMUTEXID(x, x1);
 
-      MUTEX_UNLOCKID(x1);
+      UnlockOrFail(x1, irunerr(186, x));
       return C_integer x;
       }
    }
@@ -2854,7 +2894,7 @@ function{1} unlock(x)
          body {
             struct b_mask *bp = BlkMask(x);
             if (bp->shared){
-               MUTEX_UNLOCKBLK_NOCHK(bp, "unlock(structure) function");
+               UnlockOrFail(bp->mutexid, runerr(186, x));
                return x;
                }
             runerr(180, x);
@@ -2862,7 +2902,7 @@ function{1} unlock(x)
          }
       file:{
          inline {
-            MUTEX_UNLOCKID(BlkD(x, File)->mutexid);
+            UnlockOrFail(BlkD(x, File)->mutexid, runerr(186, x));
             return x;
             }
          }
@@ -2969,7 +3009,7 @@ function{0,1} spawn(x, blocksize, stringsize, stacksize, soft)
                 * OR: another thread is in a critical region and locked
                 * MTX_THREADCONTROL.
                 */
-               if (thread_call) {
+               if (ATOMIC_LOAD(thread_call)) {
                   /* I'm part of the GC party now! Sleeping!!*/
                   thread_control(TC_ANSWERCALL);
                   }
@@ -3041,25 +3081,374 @@ function{0,1} spawn(x, blocksize, stringsize, stacksize, soft)
      }
 end
 
-"Attrib(argv[]) - read/write thread attributes"
+#else                                   /* Concurrent */
 
-function{1} Attrib(argv[argc])
+MissingFuncV(mutex)
+MissingFuncV(lock)
+MissingFuncV(trylock)
+MissingFuncV(unlock)
+MissingFuncV(condvar)
+MissingFuncV(spawn)
+MissingFuncV(signal)
+#endif                                  /* Concurrent */
+
+/*
+ * Attrib() is available with Concurrent (thread/channel attrs) and/or
+ * PosixFns (socket attrs).  Socket support must not depend on Concurrent;
+ * no-concurrency builds still need Attrib(f, "ttl=...") etc.
+ */
+#if defined(Concurrent) || defined(PosixFns)
+
+#ifdef Concurrent
+/*
+ * Set the size limit of the message queue or channel *lp under its mutex,
+ * and wake any senders blocked on the old limit so they test the new one.
+ * *lp is re-read after locking: the list may move while the lock waits.
+ */
+static word set_queue_limit(dptr lp, word n)
+{
+   struct b_list *hp = BlkD(*lp, List);
+
+   MUTEX_LOCKBLK_CONTROLLED(hp, "Attrib(): queue limit");
+   hp = BlkD(*lp, List);
+   hp->max = n;
+   if (hp->full)
+      pthread_cond_broadcast(condvars[hp->cvfull]);
+   MUTEX_UNLOCKBLK(hp, "Attrib(): queue limit");
+   return n;
+}
+#endif                                  /* Concurrent */
+
+"Attrib(argv[]) - read/write attributes (threads, sockets, ttys, ...)"
+
+function{*} Attrib(argv[argc])
    abstract {
-      return integer
+      return string++integer
       }
    body {
 
       /*
-       * TODO: Generalize Attrib() to accept data of other types
-       * such as arrays, and query/change their attributes.
+       * Attrib() dispatches on the type of its first argument:
+       *   - file + "tty=…": local tty/console raw/sane mode
+       *   - socket file: WAttrib-style "name" / "name=value" strings
+       *   - co-expression / list / integer codes: thread/channel attrs
        */
 
+#ifdef Concurrent
       struct b_coexpr *ccp;
       struct b_list *hp;
       word base=0, q, n;
+#endif                                  /* Concurrent */
 
       if (argc == 0) runerr(130, nulldesc);
 
+#if HAVE_LIBSSL
+      /*
+       * Cryptographic handles (UTR 27): Attrib(h, "name") / Attrib(h, "name=value")
+       * during the idle window.  Handles are never accepted as attribute
+       * values here (open() only).
+       */
+      if (is:file(argv[0]) && (BlkD(argv[0],File)->status & Fs_Crypto)) {
+         struct CryptoFile *cryptof = BlkD(argv[0],File)->fd.cf;
+         word i;
+
+         if (cryptof == NULL)
+            runerr(174, argv[0]);
+         if (argc < 2)
+            runerr(130, nulldesc);
+
+         for (i = 1; i < argc; i++) {
+            tended struct descrip sbuf;
+            char nbuf[64];
+            word eq, vlen;
+            char *v;
+            int rc;
+
+            if (is:null(argv[i])) continue;
+            if (is:file(argv[i]))
+               runerr(103, argv[i]);    /* handles not valid in Attrib */
+            if (!cnv:string(argv[i], sbuf))
+               runerr(109, argv[i]);
+
+            for (eq = 0; eq < StrLen(sbuf); eq++)
+               if (StrLoc(sbuf)[eq] == '=') break;
+
+            if (eq >= StrLen(sbuf)) {
+               /* Query form moved to h["name"]; Attrib() is setters only. */
+               continue;
+               }
+
+            if (eq >= (word)sizeof(nbuf))
+               runerr(1302, argv[i]);
+            memcpy(nbuf, StrLoc(sbuf), eq);
+            nbuf[eq] = '\0';
+            v = StrLoc(sbuf) + eq + 1;
+            vlen = StrLen(sbuf) - eq - 1;
+
+            if (cryptof->op == CRYPTO_OP_MATERIAL &&
+                (strcmp(nbuf, "key") == 0 || strcmp(nbuf, "cert") == 0)) {
+               char pathbuf[MaxPath];
+               if (vlen >= MaxPath) { set_errortext(1317); fail; }
+               memcpy(pathbuf, v, vlen);
+               pathbuf[vlen] = '\0';
+               if ((rc = crypto_merge(cryptof, nbuf, pathbuf)) != 0) {
+                  set_errortext(rc);
+                  fail;
+                  }
+               continue;
+               }
+
+            if ((rc = crypto_setattr(cryptof, nbuf, v, vlen)) != 0) {
+               set_errortext(rc);
+               fail;
+               }
+            }
+         fail;
+         }
+#endif                                  /* HAVE_LIBSSL */
+
+#if HAVE_LIBSSH
+      /*
+       * SSH status is peeked with c["name"] / key(c).
+       * Attrib() has no SSH setters.
+       */
+      if (is:file(argv[0]) && (BlkD(argv[0],File)->status & Fs_SSH)) {
+         fail;
+         }
+#endif                                  /* HAVE_LIBSSH */
+
+#ifdef PosixFns
+      /*
+       * TTY mode on a file (&input, etc.): Attrib(f, "tty=raw") /
+       * Attrib(f, "tty=sane").  Entered only when the first attribute
+       * is a tty name so other non-socket Attrib forms are untouched.
+       */
+      if (is:file(argv[0]) &&
+          !(BlkD(argv[0], File)->status & (Fs_Socket
+#if HAVE_LIBSSH
+                                          | Fs_SSH
+#endif                                  /* HAVE_LIBSSH */
+#if HAVE_LIBSSL
+                                          | Fs_Crypto
+#endif                                  /* HAVE_LIBSSL */
+                                          ))) {
+         tended struct descrip sbuf, ans;
+         word i;
+         int fd, status, raw, rv;
+         char *p, *end, *eq;
+         long nlen;
+
+         if (argc >= 2 && !is:null(argv[1]) &&
+             cnv:tmp_string(argv[1], sbuf)) {
+            p = StrLoc(sbuf);
+            end = p + StrLen(sbuf);
+            for (eq = p; eq < end; eq++)
+               if (*eq == '=') break;
+            nlen = (eq < end) ? (eq - p) : StrLen(sbuf);
+            if (nlen == 3 && strncmp(p, "tty", 3) == 0) {
+               status = BlkD(argv[0], File)->status;
+               if (!(status & Fs_Read) && !(status & Fs_Write))
+                  runerr(174, argv[0]);
+               /*
+                * Console &input may be tagged Fs_Window while fd.fp is
+                * still stdin; get_fd() then returns -1 on MS Windows.
+                */
+#ifdef Graphics
+               if ((status & Fs_Window) &&
+                   (BlkD(argv[0], File)->fd.fp == stdin ||
+                    BlkD(argv[0], File)->fd.fp == stdout ||
+                    BlkD(argv[0], File)->fd.fp == stderr))
+#if NT
+                  fd = _fileno(BlkD(argv[0], File)->fd.fp);
+#else                                   /* NT */
+                  fd = fileno(BlkD(argv[0], File)->fd.fp);
+#endif                                  /* NT */
+               else
+#endif                                  /* Graphics */
+                  fd = get_fd(argv[0], 0);
+               if (fd < 0)
+                  runerr(174, argv[0]);
+
+               for (i = 1; i < argc; i++) {
+                  if (is:null(argv[i]))
+                     continue;
+                  if (!cnv:tmp_string(argv[i], sbuf))
+                     runerr(109, argv[i]);
+                  p = StrLoc(sbuf);
+                  end = p + StrLen(sbuf);
+                  for (eq = p; eq < end; eq++)
+                     if (*eq == '=') break;
+                  nlen = (eq < end) ? (eq - p) : StrLen(sbuf);
+                  if (nlen != 3 || strncmp(p, "tty", 3) != 0)
+                     runerr(1310, argv[i]);
+                  if (eq >= end)
+                     runerr(1310, argv[i]); /* query not supported */
+
+                  {
+                  long vlen = end - (eq + 1);
+                  if (vlen == 3 && strncmp(eq + 1, "raw", 3) == 0)
+                     raw = 1;
+                  else if ((vlen == 4 && strncmp(eq + 1, "sane", 4) == 0) ||
+                           (vlen == 6 && strncmp(eq + 1, "cooked", 6) == 0))
+                     raw = 0;
+                  else
+                     runerr(205, argv[i]);
+                  }
+
+#if NT
+                  rv = win_console_set_raw(fd, raw);
+#elif UNIX
+                  rv = unix_tty_set_raw(fd, raw);
+#else                                   /* NT / UNIX */
+                  runerr(121, argv[0]);
+                  rv = -1;
+#endif                                  /* NT / UNIX */
+                  if (rv != 0)
+                     fail;
+                  MakeStr(eq + 1, end - (eq + 1), &ans);
+                  Protect(StrLoc(ans) = alcstr(StrLoc(ans), StrLen(ans)),
+                          runerr(0));
+                  suspend ans;
+                  }
+               fail;
+               }
+            }
+         }
+
+      /*
+       * Socket attributes: Attrib(f, "ttl=4") sets, Attrib(f, "ttl")
+       * gets.  Same names as open() trailing attributes; join/leave add or
+       * drop multicast memberships after open.
+       */
+      if (is:file(argv[0]) && (BlkD(argv[0],File)->status & Fs_Socket)) {
+         tended struct descrip sbuf, ans;
+         struct descrip setv[64];
+         char abuf[256];
+         word i, j, nset;
+         int s, status;
+         char *p, *end, *eq;
+
+         if (argc < 2)
+            runerr(130, nulldesc);
+
+         status = BlkD(argv[0],File)->status;
+#if HAVE_LIBSSL
+         if (status & Fs_Encrypt)
+            s = SSL_get_fd(BlkD(argv[0],File)->fd.ssl);
+         else
+#endif                                  /* HAVE_LIBSSL */
+            s = BlkD(argv[0],File)->fd.fd;
+
+         /*
+          * Pass 1: apply all "name=value" assignments for each socket
+          * together via apply_sock_attrs(), same as open().  Applying
+          * them one sattrib() at a time broke iface+join (a failed
+          * iface=lo0 still let join= succeed with INADDR_ANY) and
+          * lost same-call iface→join ordering.
+          */
+         for (i = 1; i < argc; ) {
+            if (is:null(argv[i]))
+               runerr(109, argv[i]);
+            if (is:file(argv[i])) {
+               if (!(BlkD(argv[i],File)->status & Fs_Socket))
+                  runerr(174, argv[i]);
+               status = BlkD(argv[i],File)->status;
+#if HAVE_LIBSSL
+               if (status & Fs_Encrypt)
+                  s = SSL_get_fd(BlkD(argv[i],File)->fd.ssl);
+               else
+#endif                                  /* HAVE_LIBSSL */
+                  s = BlkD(argv[i],File)->fd.fd;
+               i++;
+               continue;
+               }
+            nset = 0;
+            for (j = i; j < argc && !is:file(argv[j]); j++) {
+               if (is:null(argv[j]))
+                  runerr(109, argv[j]);
+               if (!cnv:tmp_string(argv[j], sbuf))
+                  runerr(109, argv[j]);
+               p = StrLoc(sbuf);
+               end = p + StrLen(sbuf);
+               for (eq = p; eq < end; eq++)
+                  if (*eq == '=') break;
+               if (eq < end) {
+                  if (nset >= 64)
+                     runerr(1310, argv[j]);
+                  setv[nset++] = argv[j];
+                  }
+               }
+            if (nset > 0) {
+               CURTSTATE();
+               k_errornumber = 0;
+               if (!apply_sock_attrs(s, 1, setv, nset, NULL, NULL, 0) ||
+                   !apply_sock_attrs(s, 0, setv, nset, NULL, NULL, 0)) {
+                  if (k_errornumber == 1310)
+                     runerr(1310, setv[0]);
+                  fail;
+                  }
+               }
+            i = j;
+            }
+
+         /* Pass 2: produce values (queries and assigned set values) */
+         for (i = 1; i < argc; i++) {
+            if (is:null(argv[i]))
+               continue;
+            if (is:file(argv[i])) {
+               if (!(BlkD(argv[i],File)->status & Fs_Socket))
+                  runerr(174, argv[i]);
+               status = BlkD(argv[i],File)->status;
+#if HAVE_LIBSSL
+               if (status & Fs_Encrypt)
+                  s = SSL_get_fd(BlkD(argv[i],File)->fd.ssl);
+               else
+#endif                                  /* HAVE_LIBSSL */
+                  s = BlkD(argv[i],File)->fd.fd;
+               continue;
+               }
+            if (!cnv:tmp_string(argv[i], sbuf))
+               runerr(109, argv[i]);
+
+            p = StrLoc(sbuf);
+            end = p + StrLen(sbuf);
+            for (eq = p; eq < end; eq++)
+               if (*eq == '=') break;
+
+            /* Query form moved to f["name"]; Attrib() is setters only. */
+            if (eq >= end)
+               continue;
+
+            {
+            long nlen = (eq < end) ? (eq - p) : StrLen(sbuf);
+            switch (sattrib(s, p, nlen, &ans, abuf)) {
+            case Failed:
+               /*
+                * join/leave/source are set-only; after a successful
+                * assignment, produce the assigned value.
+                */
+               if (eq < end) {
+                  MakeStr(eq + 1, end - (eq + 1), &ans);
+                  Protect(StrLoc(ans) = alcstr(StrLoc(ans), StrLen(ans)),
+                          runerr(0));
+                  suspend ans;
+                  }
+               continue;
+            case RunError:
+               runerr(1310, argv[i]);
+            }
+            if (is:string(ans)) {
+               Protect(StrLoc(ans) = alcstr(StrLoc(ans), StrLen(ans)),
+                       runerr(0));
+               }
+            suspend ans;
+            }
+            }
+         fail;
+         }
+#endif                                  /* PosixFns */
+
+#ifdef Concurrent
       if (is:coexpr(argv[0])) {
          if (argc == 1) runerr(130, nulldesc);
          ccp = BlkD(argv[0], Coexpr);
@@ -3087,7 +3476,7 @@ function{1} Attrib(argv[argc])
 
          switch (q) {
             case CHANNEL_LIMIT:
-               return C_integer (hp->max = n);
+               return C_integer set_queue_limit(&argv[0], n);
                break;
             default: runerr(101, argv[base]);
             }
@@ -3123,42 +3512,34 @@ function{1} Attrib(argv[argc])
       /* must have pairs of attribute and their values to continue */
       if ((argc-base)%2 != 0) runerr(130, nulldesc);
 
+      /*
+       * Set every pair and produce the last value set.  The sizes count
+       * the values in a queue and are read-only.
+       */
       for (; base < argc; base+=2){
          if (!cnv:C_integer(argv[base], q)) runerr(101, argv[base]);
          if (!cnv:C_integer(argv[base+1], n)) runerr(101, argv[base+1]);
          switch (q) {
-            case INBOX_SIZE:
-               return C_integer (BlkD(ccp->inbox, List)->size = n);
-               break;
-            case OUTBOX_SIZE:
-               return C_integer (BlkD(ccp->outbox, List)->size = n);
-               break;
             case INBOX_LIMIT:
-               return C_integer (BlkD(ccp->inbox, List)->max = n);
+               set_queue_limit(&ccp->inbox, n);
                break;
             case OUTBOX_LIMIT:
-               return C_integer (BlkD(ccp->outbox, List)->max = n);
+               set_queue_limit(&ccp->outbox, n);
                break;
             default: runerr(101, argv[base]);
             }
          }
 
-      fail;
+      return C_integer n;
+#else                                   /* Concurrent */
+      runerr(121, argv[0]);
+#endif                                  /* Concurrent */
       } /* body*/
 end
 
-
-#else                                   /* Concurrent */
-
-MissingFuncV(mutex)
-MissingFuncV(lock)
-MissingFuncV(trylock)
-MissingFuncV(unlock)
-MissingFuncV(condvar)
-MissingFuncV(spawn)
-MissingFuncV(signal)
+#else                                   /* Concurrent || PosixFns */
 MissingFuncV(Attrib)
-#endif                                  /* Concurrent */
+#endif                                  /* Concurrent || PosixFns */
 
 #ifdef HAVE_LIBCL
 

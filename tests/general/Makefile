@@ -6,7 +6,20 @@ SAMPLES = btrees diffwrds kross meander prefix recogn roman sieve wordcnt
 TARGETS=$(patsubst %.icn,%,$(wildcard *.icn))
 
 # Do not include these tests in standard testing
-SKIP=mem01 mem02
+SKIP=
+
+# cfuncs links loadable C code; omit when the runtime has no dynamic loading (e.g. --enable-thin).
+UCFEAT := $(shell $(UC) -features 2>/dev/null)
+ifneq ($(UCFEAT),)
+ifeq ($(findstring dynamic loading,$(UCFEAT)),)
+SKIP += cfuncs
+endif
+# utf8 uses uni/lib UTF8 classes; ClassObject init needs proc(&current,...),
+# which requires multiprograms (NoMultiProgram in thin builds).
+ifeq ($(findstring multiple programs,$(UCFEAT)),)
+SKIP += utf8
+endif
+endif
 
 WINSKIP=cfuncs
 
@@ -14,6 +27,10 @@ WINSKIP=cfuncs
 Test: DoTest
 
 include ../Makefile.test
+
+# Default BLKSIZE follows host RAM (src/runtime/init.r); pin it so &collections match stand/gc2.std.
+GC2_BLKSIZE ?= 1000000
+gc2: TEST_ENV := BLKSIZE=$(GC2_BLKSIZE)
 
 
 Icont Test-icont:

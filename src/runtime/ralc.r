@@ -17,14 +17,14 @@ static struct region *findgap   (struct region *curr, word nbytes);
 extern word alcnum;
 
 #ifndef MultiProgram
-word coexp_ser = 2;     /* serial numbers for co-expressions; &main is 1 */
-word list_ser = 1;      /* serial numbers for lists */
-word intern_list_ser=-1;/* serial numbers for lists used internally by the RT system */
+AtomicWord coexp_ser = 2;     /* serial numbers for co-expressions; &main is 1 */
+AtomicWord list_ser = 1;      /* serial numbers for lists */
+AtomicWord intern_list_ser=-1;/* serial numbers for lists used internally by the RT system */
 #ifdef PatternType
-word pat_ser = 1;       /* serial numbers for patterns */
+AtomicWord pat_ser = 1;       /* serial numbers for patterns */
 #endif                                  /* PatternType */
-word set_ser = 1;       /* serial numbers for sets */
-word table_ser = 1;     /* serial numbers for tables */
+AtomicWord set_ser = 1;       /* serial numbers for sets */
+AtomicWord table_ser = 1;     /* serial numbers for tables */
 #endif                                  /* MultiProgram */
 
 
@@ -223,9 +223,9 @@ struct b_coexpr *alccoexp()
    ep->title = T_Coexpr;
    ep->size = 0;
    ep->es_actstk = NULL;
-   MUTEX_LOCKID(MTX_COEXP_SER);
+   SERIAL_LOCK(MTX_COEXP_SER);
    ep->id = coexp_ser++;
-   MUTEX_UNLOCKID(MTX_COEXP_SER);
+   SERIAL_UNLOCK(MTX_COEXP_SER);
    ep->es_tend = NULL;
    ep->file_name = "";
    ep->line_num = 0;
@@ -355,9 +355,9 @@ MUTEX_LOCKID_CONTROLLED(MTX_ALCNUM);
       ep->id = 1;
    else{
 #endif                                  /* MultiProgram */
-      MUTEX_LOCKID(MTX_COEXP_SER);
+      SERIAL_LOCK(MTX_COEXP_SER);
       ep->id = coexp_ser++;
-      MUTEX_UNLOCKID(MTX_COEXP_SER);
+      SERIAL_UNLOCK(MTX_COEXP_SER);
 #ifdef MultiProgram
    }
 #endif                                  /* MultiProgram */
@@ -370,10 +370,11 @@ MUTEX_LOCKID_CONTROLLED(MTX_ALCNUM);
    {
    unsigned long available = memorysize(1);
    word size;
-   if (NARthreads <= 32)       size = available * 0.005;
-   else if (NARthreads <= 96)  size = available * 0.004;
-   else if (NARthreads <= 224) size = available * 0.003;
-   else if (NARthreads <= 480) size = available * 0.002;
+   int nthreads = ATOMIC_LOAD(NARthreads);
+   if (nthreads <= 32)       size = available * 0.005;
+   else if (nthreads <= 96)  size = available * 0.004;
+   else if (nthreads <= 224) size = available * 0.003;
+   else if (nthreads <= 480) size = available * 0.002;
    else                        size = available * 0.001;
    ep->ini_blksize = ep->ini_ssize = size;
    }
@@ -476,6 +477,9 @@ struct b_file *f(FILE *fd, int status, dptr name)
    blk->fd.fp = fd;
    blk->status = status;
    blk->fname = tname;
+#ifdef PosixFns
+   blk->sock_gen = 0;
+#endif                                  /* PosixFns */
 #ifdef Concurrent
    blk->mutexid = get_mutex(&rmtx_attr);
 #endif                                  /* Concurrent */
@@ -508,16 +512,16 @@ union block *f(int tcode)
       EVVal(sizeof(struct b_table), e_table);
       AlcFixBlk(pt, b_table, T_Table);
       ps = (struct b_set *)pt;
-      MUTEX_LOCKID(MTX_TABLE_SER);
+      SERIAL_LOCK(MTX_TABLE_SER);
       ps->id = table_ser++;
-      MUTEX_UNLOCKID(MTX_TABLE_SER);
+      SERIAL_UNLOCK(MTX_TABLE_SER);
       }
    else {       /* tcode == T_Set */
       EVVal(sizeof(struct b_set), e_set);
       AlcFixBlk(ps, b_set, T_Set);
-      MUTEX_LOCKID(MTX_SET_SER);
+      SERIAL_LOCK(MTX_SET_SER);
       ps->id = set_ser++;
-      MUTEX_UNLOCKID(MTX_SET_SER);
+      SERIAL_UNLOCK(MTX_SET_SER);
       }
    ps->size = 0;
    ps->mask = 0;
@@ -576,9 +580,9 @@ struct b_pattern *f(word stck_size)
    EVVal(sizeof (struct b_pattern), e_pattern);
    AlcFixBlk(pheader, b_pattern, T_Pattern)
    pheader->stck_size = stck_size;
-   MUTEX_LOCKID(MTX_PAT_SER);
+   SERIAL_LOCK(MTX_PAT_SER);
    pheader->id = pat_ser++;
-   MUTEX_UNLOCKID(MTX_PAT_SER);
+   SERIAL_UNLOCK(MTX_PAT_SER);
    pheader->pe = NULL;
    return pheader;
 }
@@ -645,9 +649,9 @@ struct b_list *alclisthdr(uword size, union block *bptr)
 
    AlcFixBlk(blk, b_list, T_List)
    blk->size = size;
-   MUTEX_LOCKID(MTX_LIST_SER);
+   SERIAL_LOCK(MTX_LIST_SER);
    blk->id = list_ser++;
-   MUTEX_UNLOCKID(MTX_LIST_SER);
+   SERIAL_UNLOCK(MTX_LIST_SER);
    blk->listhead = bptr;
    blk->listtail = NULL;
    INIT_SHARED(blk);
@@ -684,7 +688,7 @@ struct b_list *f(uword size, uword nslots)
    EVVal(sizeof (struct b_lelem) + (nslots-1) * sizeof(struct descrip), e_lelem);
    AlcFixBlk(blk, b_list, T_List)
    AlcVarBlk(lblk, b_lelem, T_Lelem, nslots)
-   MUTEX_LOCKID(MTX_LIST_SER);
+   SERIAL_LOCK(MTX_LIST_SER);
    if (size != -1)
       blk->id = list_ser++;
    else{
@@ -695,7 +699,7 @@ struct b_list *f(uword size, uword nslots)
       size = 0;
       blk->id = intern_list_ser--;
       }
-   MUTEX_UNLOCKID(MTX_LIST_SER);
+   SERIAL_UNLOCK(MTX_LIST_SER);
    blk->size = size;
    INIT_SHARED(blk);
 
@@ -736,7 +740,7 @@ struct b_list *f(uword size, uword nslots)
    EVVal(i, e_lelem);
    AlcFixBlk(blk, b_list, T_List)
    AlcBlk(lblk, b_lelem, T_Lelem, i)
-   MUTEX_LOCKID(MTX_LIST_SER);
+   SERIAL_LOCK(MTX_LIST_SER);
    if (size != -1)
       blk->id = list_ser++;
    else{
@@ -747,7 +751,7 @@ struct b_list *f(uword size, uword nslots)
       size = 0;
       blk->id = intern_list_ser--;
       }
-   MUTEX_UNLOCKID(MTX_LIST_SER);
+   SERIAL_UNLOCK(MTX_LIST_SER);
    blk->size = size;
    blk->listhead = blk->listtail = (union block *)lblk;
    INIT_SHARED(blk);
@@ -857,9 +861,18 @@ struct b_record *f(int nflds, union block *recptr)
    EVVal(sizeof(struct b_record) + (nflds-1)*sizeof(struct descrip),e_record);
    AlcVarBlk(blk, b_record, T_Record, nflds)
    blk->recdesc = trecptr;
+#if defined(Concurrent) && defined(HAVE_ATOMIC_BUILTINS)
+   /*
+    * The serial number shares a field of the constructor's procedure
+    * block, so it cannot be declared atomic; use an atomic add on it.
+    */
+   blk->id = __atomic_fetch_add(&(((struct b_proc *)recptr)->recid), 1,
+                                __ATOMIC_RELAXED);
+#else                                   /* Concurrent && HAVE_ATOMIC_BUILTINS */
    MUTEX_LOCKID(MTX_RECID);
    blk->id = (((struct b_proc *)recptr)->recid)++;
    MUTEX_UNLOCKID(MTX_RECID);
+#endif                                  /* Concurrent && HAVE_ATOMIC_BUILTINS */
    INIT_SHARED(blk);
    return blk;
    }
@@ -882,6 +895,10 @@ alcrecd_macro(alcrecd,0)
    struct b_refresh *blk;
    CURTSTATE();
 
+  /*
+   * n_desc counts only elems[] descriptors. Header words (nargs/ntemps/wrk_size)
+   * are part of sizeof(struct b_refresh) and are accounted for by AlcVarBlk.
+   */
    AlcVarBlk(blk, b_refresh, T_Refresh, na + nl)
    blk->nlocals = nl;
    blk->nargs = na;
@@ -1294,7 +1311,7 @@ char *f(int region, word nbytes)
       /*
        * Set "curr_private" to point to newest region.
        */
-      MUTEX_LOCKID(mtx_heap);
+      MUTEX_LOCKID_CONTROLLED(mtx_heap);
       while (curr_private->next)
          curr_private = curr_private->next;
 #endif                                  /* Concurrent */
